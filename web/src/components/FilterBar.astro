@@ -99,6 +99,7 @@ const { cities, types, tags } = Astro.props;
 <style>
   .filters {
     margin-bottom: 2rem;
+    animation: fadeUp 0.5s ease 1.3s both;
   }
 
   .prompt {
@@ -129,6 +130,7 @@ const { cities, types, tags } = Astro.props;
     border: none;
     cursor: pointer;
     padding: 0;
+    transition: color 0.2s ease;
   }
 
   select:focus {
@@ -143,6 +145,7 @@ const { cities, types, tags } = Astro.props;
     border: none;
     cursor: pointer;
     padding: 0;
+    transition: color 0.2s ease;
   }
 
   button:hover {
