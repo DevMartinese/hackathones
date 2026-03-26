@@ -129,6 +129,11 @@ a {
   caret-color: var(--text);
 }
 
+#input-line input::placeholder {
+  color: #ccc;
+  font-style: normal;
+}
+
 @keyframes fadeIn {
   from { opacity: 0; }
   to { opacity: 1; }
