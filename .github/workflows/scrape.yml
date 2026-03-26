@@ -1,0 +1,40 @@
+name: Scrape Hackathons
+
+on:
+  schedule:
+    - cron: "0 12 * * 1,4" # Lunes y jueves a las 12 UTC
+  workflow_dispatch: {} # Trigger manual
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        working-directory: scraper
+        run: uv sync
+
+      - name: Install Playwright browsers
+        working-directory: scraper
+        run: uv run playwright install chromium
+
+      - name: Run scraper pipeline
+        working-directory: scraper
+        env:
+          X_AUTH_TOKEN: ${{ secrets.X_AUTH_TOKEN }}
+          X_CT0: ${{ secrets.X_CT0 }}
+        run: uv run hackathons-scrape pipeline --output ../web/src/data/hackathons.json
+
+      - name: Commit updated data
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "data: update hackathons.json [automated]"
+          file_pattern: web/src/data/hackathons.json

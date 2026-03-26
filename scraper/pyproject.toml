@@ -10,6 +10,7 @@ dependencies = [
     "python-dateutil>=2.8",
     "thefuzz[speedup]>=0.20",
     "structlog>=23.0",
+    "httpx>=0.27",
 ]
 
 [project.scripts]
