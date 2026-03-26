@@ -334,23 +334,107 @@ const sorted = filtered.sort((a, b) => {
       terminal.classList.remove("has-output");
     }
 
-    // --- Submit flow ---
-    const SUBMIT_STEPS = [
-      { key: "name", prompt: "nombre del hackathon: ", required: true },
-      { key: "date_start", prompt: "fecha inicio (YYYY-MM-DD): ", required: true },
-      { key: "date_end", prompt: "fecha fin (YYYY-MM-DD): ", required: false },
-      { key: "city", prompt: "ciudad: ", required: false },
-      { key: "type", prompt: "tipo (presencial/online/hibrido): ", required: false },
-      { key: "location", prompt: "lugar: ", required: false },
-      { key: "url", prompt: "url del evento: ", required: true },
-      { key: "tags", prompt: "tags (separados por coma): ", required: false },
-      { key: "description", prompt: "descripcion: ", required: false },
+    // --- Validators ---
+
+    const AR_CITIES = [
+      "Buenos Aires", "Cordoba", "Rosario", "Mendoza", "La Plata",
+      "Tucuman", "Mar del Plata", "Bariloche", "Santa Fe", "Neuquen",
+      "Salta", "Misiones", "Posadas", "Resistencia", "San Juan",
+      "San Luis", "Ushuaia", "Bahia Blanca", "Rio Cuarto",
     ];
+
+    function validateName(v) {
+      if (!v.trim()) return "campo obligatorio.";
+      if (v.trim().length > 100) return "maximo 100 caracteres. (" + v.trim().length + "/100)";
+      return null;
+    }
+
+    function validateDate(v, opts) {
+      if (opts.required && !v.trim()) return "campo obligatorio.";
+      if (!v.trim()) return null;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(v.trim())) return "formato invalido. usa YYYY-MM-DD.";
+      const d = new Date(v.trim() + "T00:00:00");
+      if (isNaN(d.getTime())) return "fecha invalida.";
+      const today = new Date(); today.setHours(0,0,0,0);
+      if (d < today) return "la fecha ya paso. ingresa una fecha futura.";
+      if (opts.after) {
+        const ref = new Date(opts.after + "T00:00:00");
+        if (d < ref) return "la fecha fin debe ser igual o posterior a la fecha inicio (" + opts.after + ").";
+      }
+      return null;
+    }
+
+    function validateCity(v) {
+      if (!v.trim()) return "campo obligatorio. escribe el numero de la ciudad.";
+      const num = parseInt(v.trim());
+      if (isNaN(num) || num < 1 || num > AR_CITIES.length) {
+        return "opcion invalida. escribe un numero entre 1 y " + AR_CITIES.length + ".";
+      }
+      return null;
+    }
+
+    function validateType(v) {
+      const num = parseInt(v.trim());
+      if (isNaN(num) || num < 1 || num > 3) return "opcion invalida. escribe 1, 2 o 3.";
+      return null;
+    }
+
+    function validateUrl(v) {
+      if (!v.trim()) return "campo obligatorio.";
+      try {
+        const url = new URL(v.trim());
+        if (!["http:", "https:"].includes(url.protocol)) return "la url debe empezar con http:// o https://";
+        return null;
+      } catch {
+        return "url invalida. ejemplo: https://evento.com";
+      }
+    }
+
+    function validateDescription(v) {
+      if (!v.trim()) return "campo obligatorio.";
+      if (v.trim().length > 500) return "maximo 500 caracteres. (" + v.trim().length + "/500)";
+      return null;
+    }
+
+    // --- Submit flow ---
+
+    const TYPE_OPTIONS = ["presencial", "online", "hibrido"];
+
+    const SUBMIT_STEPS = [
+      { key: "name", prompt: "nombre del hackathon: ", validate: validateName },
+      { key: "date_start", prompt: "fecha inicio (YYYY-MM-DD): ", validate: (v) => validateDate(v, { required: true }) },
+      { key: "date_end", prompt: "fecha fin (YYYY-MM-DD, enter para omitir): ", validate: null },
+      { key: "city", prompt: "ciudad: ", validate: validateCity, beforePrompt: showCityOptions },
+      { key: "type", prompt: "tipo: ", validate: validateType, beforePrompt: showTypeOptions },
+      { key: "location", prompt: "lugar (enter para omitir): ", validate: null },
+      { key: "url", prompt: "url del evento: ", validate: validateUrl },
+      { key: "tags", prompt: "tags separados por coma (enter para omitir): ", validate: null },
+      { key: "description", prompt: "descripcion: ", validate: validateDescription },
+    ];
+
+    function showCityOptions() {
+      print('<span class="muted">ciudades disponibles:</span>');
+      AR_CITIES.forEach((c, i) => {
+        print('  <span class="bold">' + (i + 1) + '</span>  ' + c);
+      });
+      br();
+    }
+
+    function showTypeOptions() {
+      const labels = ["presencial", "online", "hibrido"];
+      print('<span class="muted">selecciona el tipo:</span>');
+      labels.forEach((l, i) => {
+        print('  <span class="bold">' + (i + 1) + '</span>  ' + l);
+      });
+      br();
+    }
 
     async function startSubmit() {
       submitState = { step: 0, data: {} };
-      await typePrint("iniciando envio de hackathon. escribe 'cancel' para cancelar.", "muted", 10);
+      await typePrint("iniciando envio de hackathon. escribe 'cancel' en cualquier momento para cancelar.", "muted", 8);
       br();
+      const step = SUBMIT_STEPS[0];
+      if (step.beforePrompt) step.beforePrompt();
       setStepPrompt();
     }
 
@@ -376,13 +460,39 @@ const sorted = filtered.sort((a, b) => {
         return;
       }
 
-      if (step.required && !value.trim()) {
-        await typePrint("campo obligatorio. intenta de nuevo.", "muted", 15);
-        return;
+      // Allow empty for optional fields (no validate function)
+      if (step.validate) {
+        // Special: date_end validates against date_start
+        let error;
+        if (step.key === "date_end" && value.trim()) {
+          error = validateDate(value, { required: false, after: submitState.data.date_start });
+        } else {
+          error = step.validate(value);
+        }
+        if (error) {
+          await typePrint(error, "muted", 12);
+          return;
+        }
       }
 
       printRaw(step.prompt + value);
-      submitState.data[step.key] = value.trim();
+
+      // Transform value for select-style fields
+      let finalValue = value.trim();
+      if (step.key === "city" && finalValue) {
+        const idx = parseInt(finalValue) - 1;
+        if (idx >= 0 && idx < AR_CITIES.length) {
+          finalValue = AR_CITIES[idx];
+        }
+      }
+      if (step.key === "type" && finalValue) {
+        const idx = parseInt(finalValue) - 1;
+        if (idx >= 0 && idx < TYPE_OPTIONS.length) {
+          finalValue = TYPE_OPTIONS[idx];
+        }
+      }
+
+      submitState.data[step.key] = finalValue;
       submitState.step++;
 
       if (submitState.step >= SUBMIT_STEPS.length) {
@@ -390,6 +500,9 @@ const sorted = filtered.sort((a, b) => {
         return;
       }
 
+      // Show options for next step if needed
+      const nextStep = SUBMIT_STEPS[submitState.step];
+      if (nextStep.beforePrompt) nextStep.beforePrompt();
       setStepPrompt();
     }
 
