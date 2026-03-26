@@ -1,0 +1,32 @@
+---
+const year = new Date().getFullYear();
+---
+
+<footer class="footer">
+  <p class="meta">Hecho en Argentina | {year}</p>
+  <p class="meta">
+    <a href="https://github.com/ainponce/hackathons-ar" target="_blank" rel="noopener noreferrer"
+      >github.com/ainponce/hackathons-ar</a
+    >
+  </p>
+</footer>
+
+<style>
+  .footer {
+    margin-top: 3rem;
+    padding-top: 1rem;
+  }
+
+  .meta {
+    color: var(--muted);
+    font-size: var(--font-size-sm);
+  }
+
+  .meta a {
+    color: var(--muted);
+  }
+
+  .meta a:hover {
+    color: var(--text);
+  }
+</style>

@@ -1,0 +1,29 @@
+[project]
+name = "hackathons-scraper"
+version = "0.1.0"
+description = "Scraper de hackathones en Argentina desde X/Twitter y Luma"
+requires-python = ">=3.11"
+dependencies = [
+    "playwright>=1.40",
+    "pydantic>=2.0",
+    "click>=8.0",
+    "python-dateutil>=2.8",
+    "thefuzz[speedup]>=0.20",
+    "structlog>=23.0",
+]
+
+[project.scripts]
+hackathons-scrape = "src.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+]

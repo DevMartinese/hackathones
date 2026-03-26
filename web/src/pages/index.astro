@@ -1,0 +1,27 @@
+---
+import { getCollection } from "astro:content";
+import BaseLayout from "../layouts/BaseLayout.astro";
+import TerminalHeader from "../components/TerminalHeader.astro";
+import FilterBar from "../components/FilterBar.astro";
+import HackathonList from "../components/HackathonList.astro";
+import Footer from "../components/Footer.astro";
+
+const hackathons = await getCollection("hackathons");
+
+const sorted = hackathons.sort((a, b) => {
+  const dateA = a.data.date_start || "9999-99-99";
+  const dateB = b.data.date_start || "9999-99-99";
+  return dateA.localeCompare(dateB);
+});
+
+const cities = [...new Set(sorted.map((h) => h.data.city).filter(Boolean))] as string[];
+const types = [...new Set(sorted.map((h) => h.data.type).filter(Boolean))] as string[];
+const tags = [...new Set(sorted.flatMap((h) => h.data.tags))].sort();
+---
+
+<BaseLayout>
+  <TerminalHeader count={sorted.length} />
+  <FilterBar cities={cities} types={types} tags={tags} />
+  <HackathonList hackathons={sorted} />
+  <Footer />
+</BaseLayout>

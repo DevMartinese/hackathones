@@ -1,0 +1,43 @@
+---
+interface Props {
+  count?: number;
+  lastUpdated?: string;
+}
+
+const { count = 0, lastUpdated } = Astro.props;
+const dateStr = lastUpdated || new Date().toISOString().split("T")[0];
+---
+
+<header class="header">
+  <p class="prompt">$ hackathons-ar --list --upcoming<span class="cursor"></span></p>
+  <br />
+  <p>Hackathons en Argentina</p>
+  <p class="meta">{count} eventos encontrados | actualizado: {dateStr}</p>
+  <p class="meta">fuentes: x/twitter, lu.ma</p>
+</header>
+
+<style>
+  .header {
+    margin-bottom: 2rem;
+  }
+
+  .prompt {
+    font-weight: 700;
+  }
+
+  .cursor::after {
+    content: "\2588";
+    animation: blink 1s step-end infinite;
+    margin-left: 2px;
+  }
+
+  @keyframes blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0; }
+  }
+
+  .meta {
+    color: var(--muted);
+    font-size: var(--font-size-sm);
+  }
+</style>

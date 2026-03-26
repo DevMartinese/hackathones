@@ -1,0 +1,13 @@
+:root {
+  --bg: #ffffff;
+  --text: #000000;
+  --muted: #999999;
+
+  --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  --font-size-base: 14px;
+  --font-size-sm: 12px;
+  --line-height: 1.6;
+
+  --terminal-padding: 2rem;
+  --max-width: 760px;
+}
