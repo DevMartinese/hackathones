@@ -10,9 +10,10 @@ interface Props {
   type: "presencial" | "online" | "hibrido" | null;
   tags: string[];
   description: string;
+  index?: number;
 }
 
-const { name, date_start, date_end, city, location, url, source, type, tags, description } = Astro.props;
+const { name, date_start, date_end, city, location, url, source, type, tags, description, index = 0 } = Astro.props;
 
 function formatDate(start: string | null, end: string | null): string {
   if (!start) return "fecha a confirmar";
@@ -34,10 +35,11 @@ const meta = [
 ---
 
 <article
-  class="card"
+  class="card fade-in"
   data-city={city?.toLowerCase() || ""}
   data-type={type || ""}
   data-tags={tags.map((t) => t.toLowerCase()).join(",")}
+  style={`transition-delay: ${index * 0.06}s`}
 >
   <p class="name">> {name}</p>
   <p class="meta">{meta}</p>
@@ -48,6 +50,10 @@ const meta = [
 </article>
 
 <style>
+  .card {
+    transition: opacity 0.4s ease, transform 0.4s ease;
+  }
+
   .name {
     font-weight: 700;
   }

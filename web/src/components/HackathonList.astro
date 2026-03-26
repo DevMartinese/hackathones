@@ -27,8 +27,8 @@ const { hackathons } = Astro.props;
   </p>
 
   <div class="items" id="list-items">
-    {hackathons.map((h) => (
-      <HackathonCard {...h.data} />
+    {hackathons.map((h, i) => (
+      <HackathonCard {...h.data} index={i} />
     ))}
   </div>
 
@@ -36,6 +36,22 @@ const { hackathons } = Astro.props;
     No se encontraron hackathones con esos filtros.
   </p>
 </section>
+
+<script>
+  const observer = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add("visible");
+          observer.unobserve(entry.target);
+        }
+      });
+    },
+    { threshold: 0.1 }
+  );
+
+  document.querySelectorAll(".fade-in").forEach((el) => observer.observe(el));
+</script>
 
 <style>
   .items :global(article) {
@@ -54,6 +70,7 @@ const { hackathons } = Astro.props;
     color: var(--muted);
     font-size: var(--font-size-sm);
     margin-bottom: 1.5rem;
+    animation: fadeUp 0.5s ease 1.4s both;
   }
 
   .empty {
