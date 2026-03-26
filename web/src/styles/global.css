@@ -129,9 +129,20 @@ a {
   caret-color: var(--text);
 }
 
-#input-line input::placeholder {
+#input-line .input-wrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+#input-line .placeholder-text {
+  position: absolute;
+  left: 0;
   color: #ccc;
-  font-style: normal;
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 @keyframes fadeIn {

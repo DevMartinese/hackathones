@@ -129,7 +129,10 @@ const sorted = filtered.sort((a, b) => {
     <div id="output"></div>
     <div id="input-line">
       <span class="prompt">$&nbsp;</span>
-      <input id="cmd" type="text" autofocus autocomplete="off" spellcheck="false" placeholder="help o list para empezar" />
+      <div class="input-wrap">
+        <input id="cmd" type="text" autofocus autocomplete="off" spellcheck="false" />
+        <span id="placeholder" class="placeholder-text"></span>
+      </div>
     </div>
   </div>
   <script is:inline define:vars={{ hackathonsData: sorted }}>
@@ -626,7 +629,79 @@ const sorted = filtered.sort((a, b) => {
 
     document.addEventListener("click", () => { if (!isTyping) cmdInput.focus(); });
 
-    // --- Boot (no typing, instant) ---
-    // Terminal starts centered with just the input. Clean.
+    // --- Animated placeholder ---
+    const phEl = document.getElementById("placeholder");
+    const PH_HINTS = [
+      'escribe help para ver comandos',
+      'escribe list para ver hackathones',
+      'escribe submit para enviar uno',
+    ];
+    let phIndex = 0;
+    let phTimer = null;
+    let phActive = true;
+
+    function typePhrase(text, el, speed, cb) {
+      let i = 0;
+      el.textContent = "";
+      function tick() {
+        if (i < text.length) {
+          el.textContent += text[i++];
+          phTimer = setTimeout(tick, speed);
+        } else {
+          // Pause, then erase
+          phTimer = setTimeout(() => erasePhrase(el, speed * 0.5, cb), 2000);
+        }
+      }
+      tick();
+    }
+
+    function erasePhrase(el, speed, cb) {
+      function tick() {
+        if (el.textContent.length > 0) {
+          el.textContent = el.textContent.slice(0, -1);
+          phTimer = setTimeout(tick, speed);
+        } else {
+          phTimer = setTimeout(cb, 300);
+        }
+      }
+      tick();
+    }
+
+    function cyclePlaceholder() {
+      if (!phActive) return;
+      typePhrase(PH_HINTS[phIndex], phEl, 40, () => {
+        phIndex = (phIndex + 1) % PH_HINTS.length;
+        cyclePlaceholder();
+      });
+    }
+
+    function stopPlaceholder() {
+      if (!phActive) return;
+      phActive = false;
+      if (phTimer) clearTimeout(phTimer);
+      phEl.style.display = "none";
+    }
+
+    cmdInput.addEventListener("input", () => {
+      if (cmdInput.value.length > 0) stopPlaceholder();
+      else if (!phActive) {
+        phActive = true;
+        phEl.style.display = "";
+        phIndex = 0;
+        cyclePlaceholder();
+      }
+    });
+
+    cmdInput.addEventListener("focus", () => {
+      if (cmdInput.value.length === 0 && !phActive) {
+        phActive = true;
+        phEl.style.display = "";
+        phIndex = 0;
+        cyclePlaceholder();
+      }
+    });
+
+    // Start cycling on boot
+    cyclePlaceholder();
   </script>
 </BaseLayout>
