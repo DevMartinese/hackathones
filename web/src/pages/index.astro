@@ -682,24 +682,8 @@ const sorted = filtered.sort((a, b) => {
       phEl.style.display = "none";
     }
 
-    cmdInput.addEventListener("input", () => {
-      if (cmdInput.value.length > 0) stopPlaceholder();
-      else if (!phActive) {
-        phActive = true;
-        phEl.style.display = "";
-        phIndex = 0;
-        cyclePlaceholder();
-      }
-    });
-
-    cmdInput.addEventListener("focus", () => {
-      if (cmdInput.value.length === 0 && !phActive) {
-        phActive = true;
-        phEl.style.display = "";
-        phIndex = 0;
-        cyclePlaceholder();
-      }
-    });
+    // Stop permanently on first interaction
+    cmdInput.addEventListener("input", stopPlaceholder, { once: true });
 
     // Start cycling on boot
     cyclePlaceholder();
