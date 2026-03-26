@@ -1,15 +1,81 @@
 ---
-import { getCollection } from "astro:content";
 import BaseLayout from "../layouts/BaseLayout.astro";
 
-const hackathons = await getCollection("hackathons");
-const sorted = hackathons
-  .sort((a, b) => {
-    const dateA = a.data.date_start || "9999-99-99";
-    const dateB = b.data.date_start || "9999-99-99";
-    return dateA.localeCompare(dateB);
-  })
-  .map((h) => h.data);
+// --- Fetch real data from Luma API at build time ---
+const LUMA_SEED_SLUGS = [
+  "4uq8yejo", "fizpni10", "6kluo21l", "do4zysjd",
+  "e12138qh", "m1vu0bde", "uds2l1td",
+];
+
+interface HackathonData {
+  id: string;
+  name: string;
+  date_start: string | null;
+  date_end: string | null;
+  city: string | null;
+  location: string | null;
+  url: string | null;
+  source: string;
+  type: string | null;
+  tags: string[];
+  description: string;
+}
+
+async function fetchLumaEvents(): Promise<HackathonData[]> {
+  const events: HackathonData[] = [];
+  for (const slug of LUMA_SEED_SLUGS) {
+    try {
+      const res = await fetch(`https://api.lu.ma/url?url=${slug}`);
+      if (!res.ok) continue;
+      const data = await res.json();
+      const event = data?.data?.event;
+      if (!event?.name) continue;
+      const geo = event.geo_address_info || {};
+      const locType = event.location_type === "offline" ? "presencial"
+        : event.location_type === "online" || event.location_type === "zoom" ? "online" : null;
+      events.push({
+        id: slug,
+        name: event.name,
+        date_start: event.start_at ? event.start_at.slice(0, 10) : null,
+        date_end: event.end_at ? event.end_at.slice(0, 10) : null,
+        city: geo.city || null,
+        location: geo.address || null,
+        url: `https://lu.ma/${slug}`,
+        source: "luma",
+        type: locType,
+        tags: [],
+        description: "",
+      });
+    } catch { /* skip */ }
+  }
+  return events;
+}
+
+// Also load from local JSON if it exists (for scraped X data)
+let jsonEvents: HackathonData[] = [];
+try {
+  const { getCollection } = await import("astro:content");
+  const collection = await getCollection("hackathons");
+  jsonEvents = collection.map((h) => h.data as unknown as HackathonData);
+} catch { /* no local data */ }
+
+const lumaEvents = await fetchLumaEvents();
+
+// Merge: prefer JSON for duplicates by id
+const seen = new Set(jsonEvents.map(e => e.id));
+const merged = [...jsonEvents];
+for (const e of lumaEvents) {
+  if (!seen.has(e.id)) {
+    merged.push(e);
+    seen.add(e.id);
+  }
+}
+
+const sorted = merged.sort((a, b) => {
+  const da = a.date_start || "9999";
+  const db = b.date_start || "9999";
+  return da.localeCompare(db);
+});
 ---
 
 <BaseLayout>
@@ -22,14 +88,69 @@ const sorted = hackathons
   </div>
   <script is:inline define:vars={{ hackathonsData: sorted }}>
     const HACKATHONS = hackathonsData;
+    const terminal = document.getElementById("terminal");
     const output = document.getElementById("output");
     const cmdInput = document.getElementById("cmd");
     const inputLine = document.getElementById("input-line");
     const history = [];
     let historyIndex = -1;
     let submitState = null;
+    let isTyping = false;
+    let typeQueue = [];
 
+    // --- Typing engine ---
+
+    function typeText(text, el, speed) {
+      return new Promise((resolve) => {
+        let i = 0;
+        el.classList.add("typing-cursor");
+        function tick() {
+          if (i < text.length) {
+            // Handle HTML entities
+            if (text[i] === '<') {
+              const end = text.indexOf('>', i);
+              if (end !== -1) {
+                el.innerHTML += text.slice(i, end + 1);
+                i = end + 1;
+              } else {
+                el.innerHTML += text[i++];
+              }
+            } else if (text[i] === '&') {
+              const end = text.indexOf(';', i);
+              if (end !== -1 && end - i < 8) {
+                el.innerHTML += text.slice(i, end + 1);
+                i = end + 1;
+              } else {
+                el.innerHTML += text[i++];
+              }
+            } else {
+              el.innerHTML += text[i++];
+            }
+            window.scrollTo(0, document.body.scrollHeight);
+            setTimeout(tick, speed);
+          } else {
+            el.classList.remove("typing-cursor");
+            resolve();
+          }
+        }
+        tick();
+      });
+    }
+
+    async function typePrint(html, cls, speed) {
+      speed = speed || 8;
+      markHasOutput();
+      const div = document.createElement("div");
+      div.className = "line" + (cls ? " " + cls : "");
+      div.style.opacity = "1";
+      output.appendChild(div);
+      await typeText(html, div, speed);
+      window.scrollTo(0, document.body.scrollHeight);
+    }
+
+    // Instant print (for bulk data like events)
     function print(html, cls) {
+      markHasOutput();
       const div = document.createElement("div");
       div.className = "line" + (cls ? " " + cls : "");
       div.innerHTML = html;
@@ -38,6 +159,7 @@ const sorted = hackathons
     }
 
     function printRaw(text, cls) {
+      markHasOutput();
       const div = document.createElement("div");
       div.className = "line" + (cls ? " " + cls : "");
       div.textContent = text;
@@ -49,6 +171,12 @@ const sorted = hackathons
       const div = document.createElement("div");
       div.className = "separator";
       output.appendChild(div);
+    }
+
+    function markHasOutput() {
+      if (!terminal.classList.contains("has-output")) {
+        terminal.classList.add("has-output");
+      }
     }
 
     function esc(s) {
@@ -79,16 +207,20 @@ const sorted = hackathons
       html += '<div class="muted">' + esc(meta) + '</div>';
       if (h.location) html += '<div class="muted">' + esc(h.location) + '</div>';
       if (h.tags && h.tags.length) html += '<div class="muted">' + h.tags.map(t => '[' + esc(t) + ']').join(' ') + '</div>';
-      html += '<div>' + esc(h.description) + '</div>';
+      if (h.description) html += '<div>' + esc(h.description) + '</div>';
       if (h.url) html += '<div><a class="link" href="' + esc(h.url) + '" target="_blank" rel="noopener">' + esc(h.url) + '</a></div>';
       html += '</div>';
       print(html);
     }
 
+    // --- Disable input during typing ---
+    function lockInput() { isTyping = true; cmdInput.disabled = true; }
+    function unlockInput() { isTyping = false; cmdInput.disabled = false; cmdInput.focus(); }
+
     // --- Commands ---
 
-    function cmdHelp() {
-      print([
+    async function cmdHelp() {
+      await typePrint([
         '<span class="bold">comandos disponibles:</span>',
         '',
         '  list                       listar todos los hackathones',
@@ -99,10 +231,10 @@ const sorted = hackathons
         '  clear                      limpiar la terminal',
         '  about                      sobre este proyecto',
         '  help                       mostrar esta ayuda',
-      ].join('\n'));
+      ].join('\n'), null, 4);
     }
 
-    function cmdList(args) {
+    async function cmdList(args) {
       let filtered = [...HACKATHONS];
       const ciudad = extractFlag(args, "--ciudad");
       const tipo = extractFlag(args, "--tipo");
@@ -125,30 +257,35 @@ const sorted = hackathons
       }
 
       if (filtered.length === 0) {
-        printRaw("no se encontraron hackathones con esos filtros.", "muted");
+        await typePrint("no se encontraron hackathones con esos filtros.", "muted", 12);
         return;
       }
 
-      printRaw(filtered.length + " hackathon" + (filtered.length !== 1 ? "es" : "") + " encontrado" + (filtered.length !== 1 ? "s" : ""), "muted");
+      await typePrint(
+        filtered.length + " hackathon" + (filtered.length !== 1 ? "es" : "") +
+        " encontrado" + (filtered.length !== 1 ? "s" : ""),
+        "muted", 12
+      );
       br();
       filtered.forEach(printEvent);
     }
 
-    function cmdAbout() {
-      print([
-        '<span class="bold">hackathons-ar</span>',
+    async function cmdAbout() {
+      await typePrint([
+        '<span class="bold">hackathons-ar</span> v1.0.0',
         '',
-        'listado actualizado de hackathones en argentina.',
+        'listado de hackathones en argentina.',
         'fuentes: x/twitter, lu.ma',
         '',
         '<a class="link" href="https://github.com/ainponce/hackathons-ar" target="_blank" rel="noopener">github.com/ainponce/hackathons-ar</a>',
         '',
         'hecho en argentina | 2026',
-      ].join('\n'));
+      ].join('\n'), null, 8);
     }
 
     function cmdClear() {
       output.innerHTML = "";
+      terminal.classList.remove("has-output");
     }
 
     // --- Submit flow ---
@@ -164,9 +301,9 @@ const sorted = hackathons
       { key: "description", prompt: "descripcion: ", required: false },
     ];
 
-    function startSubmit() {
+    async function startSubmit() {
       submitState = { step: 0, data: {} };
-      printRaw("iniciando envio de hackathon. escribe 'cancel' para cancelar.", "muted");
+      await typePrint("iniciando envio de hackathon. escribe 'cancel' para cancelar.", "muted", 10);
       br();
       setStepPrompt();
     }
@@ -182,19 +319,19 @@ const sorted = hackathons
       promptEl.innerHTML = "$&nbsp;";
     }
 
-    function handleSubmitStep(value) {
+    async function handleSubmitStep(value) {
       const step = SUBMIT_STEPS[submitState.step];
 
       if (value.toLowerCase() === "cancel") {
         printRaw(step.prompt + value);
-        printRaw("envio cancelado.", "muted");
+        await typePrint("envio cancelado.", "muted", 15);
         submitState = null;
         resetPrompt();
         return;
       }
 
       if (step.required && !value.trim()) {
-        printRaw("este campo es obligatorio.", "muted");
+        await typePrint("campo obligatorio. intenta de nuevo.", "muted", 15);
         return;
       }
 
@@ -203,26 +340,24 @@ const sorted = hackathons
       submitState.step++;
 
       if (submitState.step >= SUBMIT_STEPS.length) {
-        finishSubmit();
+        await finishSubmit();
         return;
       }
 
       setStepPrompt();
     }
 
-    function finishSubmit() {
+    async function finishSubmit() {
       const d = submitState.data;
       br();
-      printRaw("resumen:", "bold");
+      await typePrint("resumen:", "bold", 15);
       Object.entries(d).forEach(([k, v]) => {
         if (v) printRaw("  " + k + ": " + v);
       });
       br();
 
-      // Build GitHub issue URL
       const body = [
-        "## " + d.name,
-        "",
+        "## " + d.name, "",
         "- **Fecha**: " + d.date_start + (d.date_end ? " - " + d.date_end : ""),
         d.city ? "- **Ciudad**: " + d.city : "",
         d.type ? "- **Tipo**: " + d.type : "",
@@ -237,10 +372,10 @@ const sorted = hackathons
         "&body=" + encodeURIComponent(body) +
         "&labels=hackathon-submission";
 
-      print('abriendo issue en github... <a class="link" href="' + esc(issueUrl) + '" target="_blank" rel="noopener">abrir manualmente</a>');
+      await typePrint('abriendo issue en github... <a class="link" href="' + esc(issueUrl) + '" target="_blank" rel="noopener">abrir manualmente</a>', null, 10);
       window.open(issueUrl, "_blank");
       br();
-      printRaw("gracias! lo revisamos pronto.", "muted");
+      await typePrint("gracias! lo revisamos pronto.", "muted", 15);
 
       submitState = null;
       resetPrompt();
@@ -255,16 +390,17 @@ const sorted = hackathons
       return val || null;
     }
 
-    function handleCommand(raw) {
+    async function handleCommand(raw) {
       const trimmed = raw.trim();
       if (!trimmed) return;
 
       if (submitState !== null) {
-        handleSubmitStep(trimmed);
+        lockInput();
+        await handleSubmitStep(trimmed);
+        unlockInput();
         return;
       }
 
-      // Print the command as entered
       printRaw("$ " + trimmed, "bold");
       br();
 
@@ -275,34 +411,38 @@ const sorted = hackathons
       const cmd = parts[0].toLowerCase().replace(/^\//, "");
       const args = parts.slice(1);
 
+      lockInput();
+
       switch (cmd) {
         case "help":
-          cmdHelp();
+          await cmdHelp();
           break;
         case "list":
         case "ls":
-          cmdList(args);
+          await cmdList(args);
           break;
         case "submit":
-          startSubmit();
+          await startSubmit();
           break;
         case "clear":
         case "cls":
           cmdClear();
           break;
         case "about":
-          cmdAbout();
+          await cmdAbout();
           break;
         default:
-          printRaw("comando no reconocido: " + cmd, "muted");
-          printRaw('escribe "help" para ver los comandos disponibles.', "muted");
+          await typePrint("comando no reconocido: " + esc(cmd), "muted", 15);
+          await typePrint('escribe "help" para ver los comandos disponibles.', "muted", 10);
       }
       br();
+      unlockInput();
     }
 
-    // --- Input handling ---
+    // --- Input ---
 
     cmdInput.addEventListener("keydown", (e) => {
+      if (isTyping) { e.preventDefault(); return; }
       if (e.key === "Enter") {
         const val = cmdInput.value;
         cmdInput.value = "";
@@ -325,18 +465,9 @@ const sorted = hackathons
       }
     });
 
-    // Focus input on click anywhere
-    document.addEventListener("click", () => cmdInput.focus());
+    document.addEventListener("click", () => { if (!isTyping) cmdInput.focus(); });
 
-    // --- Boot ---
-    print([
-      '<span class="bold">hackathons-ar</span> v1.0.0',
-      'listado de hackathones en argentina',
-      HACKATHONS.length + ' eventos cargados',
-      '',
-      'escribe <span class="bold">help</span> para ver los comandos disponibles.',
-      'escribe <span class="bold">list</span> para ver los hackathones.',
-    ].join('\n'));
-    br();
+    // --- Boot (no typing, instant) ---
+    // Terminal starts centered with just the input. Clean.
   </script>
 </BaseLayout>
