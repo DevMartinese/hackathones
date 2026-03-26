@@ -22,7 +22,8 @@
   padding: 0;
 }
 
-html {
+html, body {
+  height: 100%;
   font-size: var(--font-size-base);
 }
 
@@ -31,26 +32,111 @@ body {
   background: var(--bg);
   color: var(--text);
   line-height: var(--line-height);
-  min-height: 100vh;
-}
-
-.terminal-container {
-  max-width: var(--max-width);
-  margin: 0 auto;
-  padding: var(--terminal-padding);
-}
-
-a {
-  color: var(--text);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-a:hover {
-  color: var(--muted);
 }
 
 ::selection {
   background: var(--text);
   color: var(--bg);
+}
+
+a {
+  color: var(--text);
+  text-underline-offset: 2px;
+}
+
+/* Terminal shell */
+#terminal {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: var(--terminal-padding);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+#output {
+  flex: 1;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+#output .line {
+  animation: fadeIn 0.15s ease both;
+}
+
+#output .muted {
+  color: var(--muted);
+}
+
+#output .bold {
+  font-weight: 700;
+}
+
+#output .link {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+#output .link:hover {
+  color: var(--muted);
+}
+
+#output .separator {
+  display: block;
+  height: 1rem;
+}
+
+#output .event-block {
+  margin-bottom: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid #eee;
+}
+
+#output .event-block:last-of-type {
+  border-bottom: none;
+}
+
+/* Input line */
+#input-line {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin-top: 0.5rem;
+  position: sticky;
+  bottom: 0;
+  background: var(--bg);
+  padding: 0.5rem 0;
+}
+
+#input-line .prompt {
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+#input-line input {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-base);
+  background: none;
+  color: var(--text);
+  border: none;
+  outline: none;
+  flex: 1;
+  caret-color: var(--text);
+}
+
+/* Submit step prompt */
+#input-line .step-prompt {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
 }

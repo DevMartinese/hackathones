@@ -1,27 +1,342 @@
 ---
 import { getCollection } from "astro:content";
 import BaseLayout from "../layouts/BaseLayout.astro";
-import TerminalHeader from "../components/TerminalHeader.astro";
-import FilterBar from "../components/FilterBar.astro";
-import HackathonList from "../components/HackathonList.astro";
-import Footer from "../components/Footer.astro";
 
 const hackathons = await getCollection("hackathons");
-
-const sorted = hackathons.sort((a, b) => {
-  const dateA = a.data.date_start || "9999-99-99";
-  const dateB = b.data.date_start || "9999-99-99";
-  return dateA.localeCompare(dateB);
-});
-
-const cities = [...new Set(sorted.map((h) => h.data.city).filter(Boolean))] as string[];
-const types = [...new Set(sorted.map((h) => h.data.type).filter(Boolean))] as string[];
-const tags = [...new Set(sorted.flatMap((h) => h.data.tags))].sort();
+const sorted = hackathons
+  .sort((a, b) => {
+    const dateA = a.data.date_start || "9999-99-99";
+    const dateB = b.data.date_start || "9999-99-99";
+    return dateA.localeCompare(dateB);
+  })
+  .map((h) => h.data);
 ---
 
 <BaseLayout>
-  <TerminalHeader count={sorted.length} />
-  <FilterBar cities={cities} types={types} tags={tags} />
-  <HackathonList hackathons={sorted} />
-  <Footer />
+  <div id="terminal">
+    <div id="output"></div>
+    <div id="input-line">
+      <span class="prompt">$&nbsp;</span>
+      <input id="cmd" type="text" autofocus autocomplete="off" spellcheck="false" />
+    </div>
+  </div>
+  <script is:inline define:vars={{ hackathonsData: sorted }}>
+    const HACKATHONS = hackathonsData;
+    const output = document.getElementById("output");
+    const cmdInput = document.getElementById("cmd");
+    const inputLine = document.getElementById("input-line");
+    const history = [];
+    let historyIndex = -1;
+    let submitState = null;
+
+    function print(html, cls) {
+      const div = document.createElement("div");
+      div.className = "line" + (cls ? " " + cls : "");
+      div.innerHTML = html;
+      output.appendChild(div);
+      window.scrollTo(0, document.body.scrollHeight);
+    }
+
+    function printRaw(text, cls) {
+      const div = document.createElement("div");
+      div.className = "line" + (cls ? " " + cls : "");
+      div.textContent = text;
+      output.appendChild(div);
+      window.scrollTo(0, document.body.scrollHeight);
+    }
+
+    function br() {
+      const div = document.createElement("div");
+      div.className = "separator";
+      output.appendChild(div);
+    }
+
+    function esc(s) {
+      const d = document.createElement("div");
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    function formatDate(start, end) {
+      if (!start) return "fecha a confirmar";
+      const opts = { day: "numeric", month: "short" };
+      const s = new Date(start + "T00:00:00").toLocaleDateString("es-AR", opts);
+      if (!end || start === end) return s;
+      const e = new Date(end + "T00:00:00").toLocaleDateString("es-AR", opts);
+      return s + " - " + e;
+    }
+
+    function printEvent(h) {
+      const meta = [
+        formatDate(h.date_start, h.date_end),
+        h.city,
+        h.type,
+        "via " + h.source,
+      ].filter(Boolean).join("  /  ");
+
+      let html = '<div class="event-block">';
+      html += '<div class="bold">&gt; ' + esc(h.name) + '</div>';
+      html += '<div class="muted">' + esc(meta) + '</div>';
+      if (h.location) html += '<div class="muted">' + esc(h.location) + '</div>';
+      if (h.tags && h.tags.length) html += '<div class="muted">' + h.tags.map(t => '[' + esc(t) + ']').join(' ') + '</div>';
+      html += '<div>' + esc(h.description) + '</div>';
+      if (h.url) html += '<div><a class="link" href="' + esc(h.url) + '" target="_blank" rel="noopener">' + esc(h.url) + '</a></div>';
+      html += '</div>';
+      print(html);
+    }
+
+    // --- Commands ---
+
+    function cmdHelp() {
+      print([
+        '<span class="bold">comandos disponibles:</span>',
+        '',
+        '  list                       listar todos los hackathones',
+        '  list --ciudad &lt;ciudad&gt;     filtrar por ciudad',
+        '  list --tipo &lt;tipo&gt;         filtrar por tipo (presencial/online/hibrido)',
+        '  list --tag &lt;tag&gt;           filtrar por tag',
+        '  submit                     enviar un hackathon nuevo',
+        '  clear                      limpiar la terminal',
+        '  about                      sobre este proyecto',
+        '  help                       mostrar esta ayuda',
+      ].join('\n'));
+    }
+
+    function cmdList(args) {
+      let filtered = [...HACKATHONS];
+      const ciudad = extractFlag(args, "--ciudad");
+      const tipo = extractFlag(args, "--tipo");
+      const tag = extractFlag(args, "--tag");
+
+      if (ciudad) {
+        filtered = filtered.filter(h =>
+          (h.city || "").toLowerCase().includes(ciudad.toLowerCase())
+        );
+      }
+      if (tipo) {
+        filtered = filtered.filter(h =>
+          (h.type || "").toLowerCase() === tipo.toLowerCase()
+        );
+      }
+      if (tag) {
+        filtered = filtered.filter(h =>
+          h.tags.some(t => t.toLowerCase().includes(tag.toLowerCase()))
+        );
+      }
+
+      if (filtered.length === 0) {
+        printRaw("no se encontraron hackathones con esos filtros.", "muted");
+        return;
+      }
+
+      printRaw(filtered.length + " hackathon" + (filtered.length !== 1 ? "es" : "") + " encontrado" + (filtered.length !== 1 ? "s" : ""), "muted");
+      br();
+      filtered.forEach(printEvent);
+    }
+
+    function cmdAbout() {
+      print([
+        '<span class="bold">hackathons-ar</span>',
+        '',
+        'listado actualizado de hackathones en argentina.',
+        'fuentes: x/twitter, lu.ma',
+        '',
+        '<a class="link" href="https://github.com/ainponce/hackathons-ar" target="_blank" rel="noopener">github.com/ainponce/hackathons-ar</a>',
+        '',
+        'hecho en argentina | 2026',
+      ].join('\n'));
+    }
+
+    function cmdClear() {
+      output.innerHTML = "";
+    }
+
+    // --- Submit flow ---
+    const SUBMIT_STEPS = [
+      { key: "name", prompt: "nombre del hackathon: ", required: true },
+      { key: "date_start", prompt: "fecha inicio (YYYY-MM-DD): ", required: true },
+      { key: "date_end", prompt: "fecha fin (YYYY-MM-DD): ", required: false },
+      { key: "city", prompt: "ciudad: ", required: false },
+      { key: "type", prompt: "tipo (presencial/online/hibrido): ", required: false },
+      { key: "location", prompt: "lugar: ", required: false },
+      { key: "url", prompt: "url del evento: ", required: true },
+      { key: "tags", prompt: "tags (separados por coma): ", required: false },
+      { key: "description", prompt: "descripcion: ", required: false },
+    ];
+
+    function startSubmit() {
+      submitState = { step: 0, data: {} };
+      printRaw("iniciando envio de hackathon. escribe 'cancel' para cancelar.", "muted");
+      br();
+      setStepPrompt();
+    }
+
+    function setStepPrompt() {
+      const step = SUBMIT_STEPS[submitState.step];
+      const promptEl = inputLine.querySelector(".prompt");
+      promptEl.innerHTML = '<span class="step-prompt">' + step.prompt + '</span>';
+    }
+
+    function resetPrompt() {
+      const promptEl = inputLine.querySelector(".prompt");
+      promptEl.innerHTML = "$&nbsp;";
+    }
+
+    function handleSubmitStep(value) {
+      const step = SUBMIT_STEPS[submitState.step];
+
+      if (value.toLowerCase() === "cancel") {
+        printRaw(step.prompt + value);
+        printRaw("envio cancelado.", "muted");
+        submitState = null;
+        resetPrompt();
+        return;
+      }
+
+      if (step.required && !value.trim()) {
+        printRaw("este campo es obligatorio.", "muted");
+        return;
+      }
+
+      printRaw(step.prompt + value);
+      submitState.data[step.key] = value.trim();
+      submitState.step++;
+
+      if (submitState.step >= SUBMIT_STEPS.length) {
+        finishSubmit();
+        return;
+      }
+
+      setStepPrompt();
+    }
+
+    function finishSubmit() {
+      const d = submitState.data;
+      br();
+      printRaw("resumen:", "bold");
+      Object.entries(d).forEach(([k, v]) => {
+        if (v) printRaw("  " + k + ": " + v);
+      });
+      br();
+
+      // Build GitHub issue URL
+      const body = [
+        "## " + d.name,
+        "",
+        "- **Fecha**: " + d.date_start + (d.date_end ? " - " + d.date_end : ""),
+        d.city ? "- **Ciudad**: " + d.city : "",
+        d.type ? "- **Tipo**: " + d.type : "",
+        d.location ? "- **Lugar**: " + d.location : "",
+        d.url ? "- **URL**: " + d.url : "",
+        d.tags ? "- **Tags**: " + d.tags : "",
+        d.description ? "\n### Descripcion\n" + d.description : "",
+      ].filter(Boolean).join("\n");
+
+      const issueUrl = "https://github.com/ainponce/hackathons-ar/issues/new?title=" +
+        encodeURIComponent("[hackathon] " + d.name) +
+        "&body=" + encodeURIComponent(body) +
+        "&labels=hackathon-submission";
+
+      print('abriendo issue en github... <a class="link" href="' + esc(issueUrl) + '" target="_blank" rel="noopener">abrir manualmente</a>');
+      window.open(issueUrl, "_blank");
+      br();
+      printRaw("gracias! lo revisamos pronto.", "muted");
+
+      submitState = null;
+      resetPrompt();
+    }
+
+    // --- Parser ---
+
+    function extractFlag(args, flag) {
+      const idx = args.indexOf(flag);
+      if (idx === -1) return null;
+      const val = args.slice(idx + 1).join(" ").trim();
+      return val || null;
+    }
+
+    function handleCommand(raw) {
+      const trimmed = raw.trim();
+      if (!trimmed) return;
+
+      if (submitState !== null) {
+        handleSubmitStep(trimmed);
+        return;
+      }
+
+      // Print the command as entered
+      printRaw("$ " + trimmed, "bold");
+      br();
+
+      history.push(trimmed);
+      historyIndex = history.length;
+
+      const parts = trimmed.split(/\s+/);
+      const cmd = parts[0].toLowerCase().replace(/^\//, "");
+      const args = parts.slice(1);
+
+      switch (cmd) {
+        case "help":
+          cmdHelp();
+          break;
+        case "list":
+        case "ls":
+          cmdList(args);
+          break;
+        case "submit":
+          startSubmit();
+          break;
+        case "clear":
+        case "cls":
+          cmdClear();
+          break;
+        case "about":
+          cmdAbout();
+          break;
+        default:
+          printRaw("comando no reconocido: " + cmd, "muted");
+          printRaw('escribe "help" para ver los comandos disponibles.', "muted");
+      }
+      br();
+    }
+
+    // --- Input handling ---
+
+    cmdInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        const val = cmdInput.value;
+        cmdInput.value = "";
+        handleCommand(val);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        if (historyIndex > 0) {
+          historyIndex--;
+          cmdInput.value = history[historyIndex];
+        }
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        if (historyIndex < history.length - 1) {
+          historyIndex++;
+          cmdInput.value = history[historyIndex];
+        } else {
+          historyIndex = history.length;
+          cmdInput.value = "";
+        }
+      }
+    });
+
+    // Focus input on click anywhere
+    document.addEventListener("click", () => cmdInput.focus());
+
+    // --- Boot ---
+    print([
+      '<span class="bold">hackathons-ar</span> v1.0.0',
+      'listado de hackathones en argentina',
+      HACKATHONS.length + ' eventos cargados',
+      '',
+      'escribe <span class="bold">help</span> para ver los comandos disponibles.',
+      'escribe <span class="bold">list</span> para ver los hackathones.',
+    ].join('\n'));
+    br();
+  </script>
 </BaseLayout>

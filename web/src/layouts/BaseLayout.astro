@@ -6,7 +6,7 @@ interface Props {
 
 const {
   title = "Hackathons Argentina",
-  description = "Listado actualizado de hackathones en Argentina. Fuentes: X/Twitter y Luma.",
+  description = "Listado actualizado de hackathones en Argentina. Terminal interactiva.",
 } = Astro.props;
 ---
 
@@ -26,9 +26,7 @@ const {
     <title>{title}</title>
   </head>
   <body>
-    <div class="terminal-container">
-      <slot />
-    </div>
+    <slot />
   </body>
 </html>
 
