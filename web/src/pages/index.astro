@@ -21,6 +21,33 @@ interface HackathonData {
   description: string;
 }
 
+const ARGENTINA_KEYWORDS = [
+  "argentina", "buenos aires", "córdoba", "cordoba", "rosario",
+  "mendoza", "tucumán", "tucuman", "la plata", "mar del plata",
+  "bariloche", "santa fe", "neuquén", "salta", "misiones",
+];
+
+function isArgentina(geo: Record<string, string>): boolean {
+  const country = (geo.country || "").toLowerCase();
+  if (country.includes("argentina")) return true;
+  const combined = `${geo.city || ""} ${geo.region || ""} ${geo.address || ""}`.toLowerCase();
+  return ARGENTINA_KEYWORDS.some(kw => combined.includes(kw));
+}
+
+function normalizeCity(geo: Record<string, string>): string | null {
+  const city = geo.city || "";
+  // Skip postal codes (e.g. "C1426DGG")
+  if (/^[A-Z]\d{4}/.test(city)) {
+    // Try to extract city from region or address
+    const region = geo.region || "";
+    if (region.toLowerCase().includes("buenos aires")) return "Buenos Aires";
+    return null;
+  }
+  return city || null;
+}
+
+const today = new Date().toISOString().slice(0, 10);
+
 async function fetchLumaEvents(): Promise<HackathonData[]> {
   const events: HackathonData[] = [];
   for (const slug of LUMA_SEED_SLUGS) {
@@ -31,14 +58,26 @@ async function fetchLumaEvents(): Promise<HackathonData[]> {
       const event = data?.data?.event;
       if (!event?.name) continue;
       const geo = event.geo_address_info || {};
+
+      // Filter: only Argentina (or online events with "argentina" in name)
+      const isOnline = event.location_type === "online" || event.location_type === "zoom";
+      const nameHasAr = event.name.toLowerCase().includes("argentina");
+      if (!isOnline && !isArgentina(geo)) continue;
+      if (isOnline && !nameHasAr) continue;
+
+      // Filter: only future events
+      const endDate = event.end_at ? event.end_at.slice(0, 10) : event.start_at?.slice(0, 10);
+      if (endDate && endDate < today) continue;
+
       const locType = event.location_type === "offline" ? "presencial"
-        : event.location_type === "online" || event.location_type === "zoom" ? "online" : null;
+        : isOnline ? "online" : null;
+
       events.push({
         id: slug,
         name: event.name,
         date_start: event.start_at ? event.start_at.slice(0, 10) : null,
         date_end: event.end_at ? event.end_at.slice(0, 10) : null,
-        city: geo.city || null,
+        city: normalizeCity(geo),
         location: geo.address || null,
         url: `https://lu.ma/${slug}`,
         source: "luma",
@@ -71,7 +110,14 @@ for (const e of lumaEvents) {
   }
 }
 
-const sorted = merged.sort((a, b) => {
+// Filter merged: only future events
+const filtered = merged.filter(e => {
+  const endDate = e.date_end || e.date_start;
+  if (endDate && endDate < today) return false;
+  return true;
+});
+
+const sorted = filtered.sort((a, b) => {
   const da = a.date_start || "9999";
   const db = b.date_start || "9999";
   return da.localeCompare(db);
