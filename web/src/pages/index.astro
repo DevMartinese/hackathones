@@ -604,6 +604,22 @@ const sorted = filtered.sort((a, b) => {
     // --- Input ---
 
     cmdInput.addEventListener("keydown", (e) => {
+      // Ctrl+C: cancel submit or clear input
+      if (e.key === "c" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        if (submitState !== null) {
+          printRaw("^C");
+          typePrint("envio cancelado.", "muted", 15);
+          submitState = null;
+          resetPrompt();
+          cmdInput.value = "";
+          unlockInput();
+        } else if (cmdInput.value) {
+          printRaw("$ " + cmdInput.value + "^C", "muted");
+          cmdInput.value = "";
+        }
+        return;
+      }
       if (isTyping) { e.preventDefault(); return; }
       if (e.key === "Enter") {
         const val = cmdInput.value;
