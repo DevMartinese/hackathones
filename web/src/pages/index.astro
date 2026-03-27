@@ -3,8 +3,26 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 
 // --- Fetch real data from Luma API at build time ---
 const LUMA_SEED_SLUGS = [
-  "4uq8yejo", "fizpni10", "6kluo21l", "do4zysjd",
-  "e12138qh", "m1vu0bde", "uds2l1td",
+  // Argentina
+  "4uq8yejo", "6kluo21l", "e12138qh", "m1vu0bde", "uds2l1td",
+  // Colombia
+  "hackavax", "fizpni10",
+  // Mexico
+  "3rpalo5b",
+  // LATAM / virtual
+  "do4zysjd", "xrhqzya0", "bp630aaz",
+  // USA
+  "miami-hackathon", "genaihack", "arkusAI", "hackathon-6-25",
+  // Brasil
+  "6s3u6xwc",
+];
+
+const AMERICAS_COUNTRIES = [
+  "argentina", "brasil", "brazil", "chile", "colombia", "mexico", "méxico",
+  "peru", "perú", "uruguay", "paraguay", "ecuador", "bolivia", "venezuela",
+  "costa rica", "panama", "panamá", "guatemala", "honduras", "el salvador",
+  "nicaragua", "cuba", "dominican republic", "república dominicana",
+  "united states", "estados unidos", "usa", "canada", "canadá",
 ];
 
 interface HackathonData {
@@ -12,6 +30,7 @@ interface HackathonData {
   name: string;
   date_start: string | null;
   date_end: string | null;
+  country: string | null;
   city: string | null;
   location: string | null;
   url: string | null;
@@ -21,24 +40,35 @@ interface HackathonData {
   description: string;
 }
 
-const ARGENTINA_KEYWORDS = [
-  "argentina", "buenos aires", "córdoba", "cordoba", "rosario",
-  "mendoza", "tucumán", "tucuman", "la plata", "mar del plata",
-  "bariloche", "santa fe", "neuquén", "salta", "misiones",
-];
-
-function isArgentina(geo: Record<string, string>): boolean {
+function isAmericas(geo: Record<string, string>, eventName: string): boolean {
   const country = (geo.country || "").toLowerCase();
-  if (country.includes("argentina")) return true;
-  const combined = `${geo.city || ""} ${geo.region || ""} ${geo.address || ""}`.toLowerCase();
-  return ARGENTINA_KEYWORDS.some(kw => combined.includes(kw));
+  if (AMERICAS_COUNTRIES.some(c => country.includes(c))) return true;
+  const combined = `${eventName} ${geo.city || ""} ${geo.region || ""}`.toLowerCase();
+  const latamKeywords = ["latam", "latinoamerica", "latin america", ...AMERICAS_COUNTRIES];
+  return latamKeywords.some(kw => combined.includes(kw));
+}
+
+function normalizeCountry(geo: Record<string, string>): string | null {
+  const raw = (geo.country || "").toLowerCase();
+  const map: Record<string, string> = {
+    "argentina": "Argentina", "brazil": "Brasil", "brasil": "Brasil",
+    "chile": "Chile", "colombia": "Colombia", "mexico": "Mexico",
+    "méxico": "Mexico", "peru": "Peru", "perú": "Peru",
+    "uruguay": "Uruguay", "paraguay": "Paraguay", "ecuador": "Ecuador",
+    "bolivia": "Bolivia", "venezuela": "Venezuela", "costa rica": "Costa Rica",
+    "panama": "Panama", "panamá": "Panama", "guatemala": "Guatemala",
+    "united states": "USA", "estados unidos": "USA", "canada": "Canada",
+    "canadá": "Canada", "cuba": "Cuba",
+  };
+  for (const [key, val] of Object.entries(map)) {
+    if (raw.includes(key)) return val;
+  }
+  return geo.country || null;
 }
 
 function normalizeCity(geo: Record<string, string>): string | null {
   const city = geo.city || "";
-  // Skip postal codes (e.g. "C1426DGG")
   if (/^[A-Z]\d{4}/.test(city)) {
-    // Try to extract city from region or address
     const region = geo.region || "";
     if (region.toLowerCase().includes("buenos aires")) return "Buenos Aires";
     return null;
@@ -59,13 +89,9 @@ async function fetchLumaEvents(): Promise<HackathonData[]> {
       if (!event?.name) continue;
       const geo = event.geo_address_info || {};
 
-      // Filter: only Argentina (or online events with "argentina" in name)
       const isOnline = event.location_type === "online" || event.location_type === "zoom";
-      const nameHasAr = event.name.toLowerCase().includes("argentina");
-      if (!isOnline && !isArgentina(geo)) continue;
-      if (isOnline && !nameHasAr) continue;
+      if (!isOnline && !isAmericas(geo, event.name)) continue;
 
-      // Filter: only future events
       const endDate = event.end_at ? event.end_at.slice(0, 10) : event.start_at?.slice(0, 10);
       if (endDate && endDate < today) continue;
 
@@ -77,6 +103,7 @@ async function fetchLumaEvents(): Promise<HackathonData[]> {
         name: event.name,
         date_start: event.start_at ? event.start_at.slice(0, 10) : null,
         date_end: event.end_at ? event.end_at.slice(0, 10) : null,
+        country: isOnline ? "Online" : normalizeCountry(geo),
         city: normalizeCity(geo),
         location: geo.address || null,
         url: `https://lu.ma/${slug}`,
@@ -90,7 +117,6 @@ async function fetchLumaEvents(): Promise<HackathonData[]> {
   return events;
 }
 
-// Also load from local JSON if it exists (for scraped X data)
 let jsonEvents: HackathonData[] = [];
 try {
   const { getCollection } = await import("astro:content");
@@ -100,7 +126,6 @@ try {
 
 const lumaEvents = await fetchLumaEvents();
 
-// Merge: prefer JSON for duplicates by id
 const seen = new Set(jsonEvents.map(e => e.id));
 const merged = [...jsonEvents];
 for (const e of lumaEvents) {
@@ -110,7 +135,6 @@ for (const e of lumaEvents) {
   }
 }
 
-// Filter merged: only future events
 const filtered = merged.filter(e => {
   const endDate = e.date_end || e.date_start;
   if (endDate && endDate < today) return false;
@@ -131,6 +155,9 @@ const sorted = filtered.sort((a, b) => {
       <span class="prompt">$&nbsp;</span>
       <div class="input-wrap">
         <input id="cmd" type="text" autofocus autocomplete="off" spellcheck="false" />
+        <div class="ghost-overlay" id="ghost-overlay" aria-hidden="true">
+          <span id="ghost-mirror"></span><span id="autocomplete-ghost" class="autocomplete-ghost"></span>
+        </div>
         <span id="placeholder" class="placeholder-text"></span>
       </div>
     </div>
@@ -145,7 +172,6 @@ const sorted = filtered.sort((a, b) => {
     let historyIndex = -1;
     let submitState = null;
     let isTyping = false;
-    let typeQueue = [];
 
     // --- Typing engine ---
 
@@ -155,32 +181,18 @@ const sorted = filtered.sort((a, b) => {
         el.classList.add("typing-cursor");
         function tick() {
           if (i < text.length) {
-            // Handle HTML entities
             if (text[i] === '<') {
               const end = text.indexOf('>', i);
-              if (end !== -1) {
-                el.innerHTML += text.slice(i, end + 1);
-                i = end + 1;
-              } else {
-                el.innerHTML += text[i++];
-              }
+              if (end !== -1) { el.innerHTML += text.slice(i, end + 1); i = end + 1; }
+              else { el.innerHTML += text[i++]; }
             } else if (text[i] === '&') {
               const end = text.indexOf(';', i);
-              if (end !== -1 && end - i < 8) {
-                el.innerHTML += text.slice(i, end + 1);
-                i = end + 1;
-              } else {
-                el.innerHTML += text[i++];
-              }
-            } else {
-              el.innerHTML += text[i++];
-            }
+              if (end !== -1 && end - i < 8) { el.innerHTML += text.slice(i, end + 1); i = end + 1; }
+              else { el.innerHTML += text[i++]; }
+            } else { el.innerHTML += text[i++]; }
             window.scrollTo(0, document.body.scrollHeight);
             setTimeout(tick, speed);
-          } else {
-            el.classList.remove("typing-cursor");
-            resolve();
-          }
+          } else { el.classList.remove("typing-cursor"); resolve(); }
         }
         tick();
       });
@@ -197,7 +209,6 @@ const sorted = filtered.sort((a, b) => {
       window.scrollTo(0, document.body.scrollHeight);
     }
 
-    // Instant print (for bulk data like events)
     function print(html, cls) {
       markHasOutput();
       const div = document.createElement("div");
@@ -223,9 +234,7 @@ const sorted = filtered.sort((a, b) => {
     }
 
     function markHasOutput() {
-      if (!terminal.classList.contains("has-output")) {
-        terminal.classList.add("has-output");
-      }
+      if (!terminal.classList.contains("has-output")) terminal.classList.add("has-output");
     }
 
     function esc(s) {
@@ -246,6 +255,7 @@ const sorted = filtered.sort((a, b) => {
     function printEvent(h) {
       const meta = [
         formatDate(h.date_start, h.date_end),
+        h.country,
         h.city,
         h.type,
         "via " + h.source,
@@ -262,7 +272,6 @@ const sorted = filtered.sort((a, b) => {
       print(html);
     }
 
-    // --- Disable input during typing ---
     function lockInput() { isTyping = true; cmdInput.disabled = true; }
     function unlockInput() { isTyping = false; cmdInput.disabled = false; cmdInput.focus(); }
 
@@ -273,6 +282,7 @@ const sorted = filtered.sort((a, b) => {
         '<span class="bold">comandos disponibles:</span>',
         '',
         '  list                       listar todos los hackathones',
+        '  list --pais &lt;pais&gt;         filtrar por pais',
         '  list --ciudad &lt;ciudad&gt;     filtrar por ciudad',
         '  list --tipo &lt;tipo&gt;         filtrar por tipo (presencial/online/hibrido)',
         '  list --tag &lt;tag&gt;           filtrar por tag',
@@ -284,49 +294,55 @@ const sorted = filtered.sort((a, b) => {
     }
 
     async function cmdList(args) {
-      let filtered = [...HACKATHONS];
+      let results = [...HACKATHONS];
+      const pais = extractFlag(args, "--pais");
       const ciudad = extractFlag(args, "--ciudad");
       const tipo = extractFlag(args, "--tipo");
       const tag = extractFlag(args, "--tag");
 
+      if (pais) {
+        results = results.filter(h =>
+          (h.country || "").toLowerCase().includes(pais.toLowerCase())
+        );
+      }
       if (ciudad) {
-        filtered = filtered.filter(h =>
+        results = results.filter(h =>
           (h.city || "").toLowerCase().includes(ciudad.toLowerCase())
         );
       }
       if (tipo) {
-        filtered = filtered.filter(h =>
+        results = results.filter(h =>
           (h.type || "").toLowerCase() === tipo.toLowerCase()
         );
       }
       if (tag) {
-        filtered = filtered.filter(h =>
+        results = results.filter(h =>
           h.tags.some(t => t.toLowerCase().includes(tag.toLowerCase()))
         );
       }
 
-      if (filtered.length === 0) {
+      if (results.length === 0) {
         await typePrint("no se encontraron hackathones con esos filtros.", "muted", 12);
         return;
       }
 
       await typePrint(
-        filtered.length + " hackathon" + (filtered.length !== 1 ? "es" : "") +
-        " encontrado" + (filtered.length !== 1 ? "s" : ""),
+        results.length + " hackathon" + (results.length !== 1 ? "es" : "") +
+        " encontrado" + (results.length !== 1 ? "s" : ""),
         "muted", 12
       );
       br();
-      filtered.forEach(printEvent);
+      results.forEach(printEvent);
     }
 
     async function cmdAbout() {
       await typePrint([
-        '<span class="bold">hackathons-ar</span> v1.0.0',
+        '<span class="bold">hackathones</span> v2.0.0',
         '',
-        'listado de hackathones en argentina.',
-        'fuentes: x/twitter, lu.ma',
+        'directorio de hackathones en america.',
+        'fuentes: lu.ma, x/twitter, submissions de la comunidad.',
         '',
-        '<a class="link" href="https://github.com/ainponce/hackathons-ar" target="_blank" rel="noopener">github.com/ainponce/hackathons-ar</a>',
+        '<a class="link" href="https://github.com/ainponce/hackathones" target="_blank" rel="noopener">github.com/ainponce/hackathones</a>',
         '',
         'hecho en argentina | 2026',
       ].join('\n'), null, 8);
@@ -339,12 +355,31 @@ const sorted = filtered.sort((a, b) => {
 
     // --- Validators ---
 
-    const AR_CITIES = [
-      "Buenos Aires", "Cordoba", "Rosario", "Mendoza", "La Plata",
-      "Tucuman", "Mar del Plata", "Bariloche", "Santa Fe", "Neuquen",
-      "Salta", "Misiones", "Posadas", "Resistencia", "San Juan",
-      "San Luis", "Ushuaia", "Bahia Blanca", "Rio Cuarto",
+    const COUNTRIES_LIST = [
+      "Argentina", "Brasil", "Chile", "Colombia", "Mexico",
+      "Peru", "Uruguay", "Paraguay", "Ecuador", "Bolivia",
+      "Venezuela", "Costa Rica", "Panama", "Guatemala",
+      "USA", "Canada",
     ];
+
+    const CITIES_BY_COUNTRY = {
+      "Argentina": ["Buenos Aires", "Cordoba", "Rosario", "Mendoza", "La Plata", "Tucuman", "Mar del Plata", "Bariloche", "Santa Fe", "Salta"],
+      "Brasil": ["Sao Paulo", "Rio de Janeiro", "Brasilia", "Belo Horizonte", "Curitiba", "Porto Alegre", "Florianopolis", "Recife", "Salvador"],
+      "Chile": ["Santiago", "Valparaiso", "Concepcion"],
+      "Colombia": ["Bogota", "Medellin", "Cali", "Barranquilla", "Cartagena"],
+      "Mexico": ["Ciudad de Mexico", "Guadalajara", "Monterrey", "Puebla", "Cancun", "Queretaro"],
+      "Peru": ["Lima", "Arequipa", "Cusco"],
+      "Uruguay": ["Montevideo"],
+      "Paraguay": ["Asuncion"],
+      "Ecuador": ["Quito", "Guayaquil"],
+      "Bolivia": ["La Paz", "Santa Cruz"],
+      "Venezuela": ["Caracas"],
+      "Costa Rica": ["San Jose"],
+      "Panama": ["Ciudad de Panama"],
+      "Guatemala": ["Ciudad de Guatemala"],
+      "USA": ["Miami", "New York", "San Francisco", "Los Angeles", "Austin", "Chicago", "Denver", "Boston"],
+      "Canada": ["Toronto", "Vancouver", "Montreal"],
+    };
 
     function validateName(v) {
       if (!v.trim()) return "campo obligatorio.";
@@ -362,16 +397,27 @@ const sorted = filtered.sort((a, b) => {
       if (d < today) return "la fecha ya paso. ingresa una fecha futura.";
       if (opts.after) {
         const ref = new Date(opts.after + "T00:00:00");
-        if (d < ref) return "la fecha fin debe ser igual o posterior a la fecha inicio (" + opts.after + ").";
+        if (d < ref) return "la fecha fin debe ser igual o posterior a " + opts.after + ".";
+      }
+      return null;
+    }
+
+    function validateCountry(v) {
+      if (!v.trim()) return "campo obligatorio.";
+      const num = parseInt(v.trim());
+      if (isNaN(num) || num < 1 || num > COUNTRIES_LIST.length) {
+        return "opcion invalida. escribe un numero entre 1 y " + COUNTRIES_LIST.length + ".";
       }
       return null;
     }
 
     function validateCity(v) {
-      if (!v.trim()) return "campo obligatorio. escribe el numero de la ciudad.";
+      if (!v.trim()) return null; // optional if no cities for country
+      const cities = CITIES_BY_COUNTRY[submitState.data.country] || [];
+      if (cities.length === 0) return null;
       const num = parseInt(v.trim());
-      if (isNaN(num) || num < 1 || num > AR_CITIES.length) {
-        return "opcion invalida. escribe un numero entre 1 y " + AR_CITIES.length + ".";
+      if (isNaN(num) || num < 1 || num > cities.length) {
+        return "opcion invalida. escribe un numero entre 1 y " + cities.length + ".";
       }
       return null;
     }
@@ -388,9 +434,7 @@ const sorted = filtered.sort((a, b) => {
         const url = new URL(v.trim());
         if (!["http:", "https:"].includes(url.protocol)) return "la url debe empezar con http:// o https://";
         return null;
-      } catch {
-        return "url invalida. ejemplo: https://evento.com";
-      }
+      } catch { return "url invalida. ejemplo: https://evento.com"; }
     }
 
     function validateDescription(v) {
@@ -403,10 +447,37 @@ const sorted = filtered.sort((a, b) => {
 
     const TYPE_OPTIONS = ["presencial", "online", "hibrido"];
 
+    function showCountryOptions() {
+      print('<span class="muted">paises disponibles:</span>');
+      COUNTRIES_LIST.forEach((c, i) => {
+        print('  <span class="bold">' + String(i + 1).padStart(2, ' ') + '</span>  ' + c);
+      });
+      br();
+    }
+
+    function showCityOptions() {
+      const cities = CITIES_BY_COUNTRY[submitState.data.country] || [];
+      if (cities.length === 0) return;
+      print('<span class="muted">ciudades en ' + esc(submitState.data.country) + ':</span>');
+      cities.forEach((c, i) => {
+        print('  <span class="bold">' + String(i + 1).padStart(2, ' ') + '</span>  ' + c);
+      });
+      br();
+    }
+
+    function showTypeOptions() {
+      print('<span class="muted">selecciona el tipo:</span>');
+      TYPE_OPTIONS.forEach((l, i) => {
+        print('  <span class="bold">' + (i + 1) + '</span>  ' + l);
+      });
+      br();
+    }
+
     const SUBMIT_STEPS = [
       { key: "name", prompt: "nombre del hackathon: ", validate: validateName },
       { key: "date_start", prompt: "fecha inicio (YYYY-MM-DD): ", validate: (v) => validateDate(v, { required: true }) },
       { key: "date_end", prompt: "fecha fin (YYYY-MM-DD, enter para omitir): ", validate: null },
+      { key: "country", prompt: "pais: ", validate: validateCountry, beforePrompt: showCountryOptions },
       { key: "city", prompt: "ciudad: ", validate: validateCity, beforePrompt: showCityOptions },
       { key: "type", prompt: "tipo: ", validate: validateType, beforePrompt: showTypeOptions },
       { key: "location", prompt: "lugar (enter para omitir): ", validate: null },
@@ -415,26 +486,9 @@ const sorted = filtered.sort((a, b) => {
       { key: "description", prompt: "descripcion: ", validate: validateDescription },
     ];
 
-    function showCityOptions() {
-      print('<span class="muted">ciudades disponibles:</span>');
-      AR_CITIES.forEach((c, i) => {
-        print('  <span class="bold">' + (i + 1) + '</span>  ' + c);
-      });
-      br();
-    }
-
-    function showTypeOptions() {
-      const labels = ["presencial", "online", "hibrido"];
-      print('<span class="muted">selecciona el tipo:</span>');
-      labels.forEach((l, i) => {
-        print('  <span class="bold">' + (i + 1) + '</span>  ' + l);
-      });
-      br();
-    }
-
     async function startSubmit() {
       submitState = { step: 0, data: {} };
-      await typePrint("iniciando envio de hackathon. escribe 'cancel' en cualquier momento para cancelar.", "muted", 8);
+      await typePrint("iniciando envio de hackathon. escribe 'cancel' o Ctrl+C para cancelar.", "muted", 8);
       br();
       const step = SUBMIT_STEPS[0];
       if (step.beforePrompt) step.beforePrompt();
@@ -463,9 +517,7 @@ const sorted = filtered.sort((a, b) => {
         return;
       }
 
-      // Allow empty for optional fields (no validate function)
       if (step.validate) {
-        // Special: date_end validates against date_start
         let error;
         if (step.key === "date_end" && value.trim()) {
           error = validateDate(value, { required: false, after: submitState.data.date_start });
@@ -480,30 +532,41 @@ const sorted = filtered.sort((a, b) => {
 
       printRaw(step.prompt + value);
 
-      // Transform value for select-style fields
       let finalValue = value.trim();
-      if (step.key === "city" && finalValue) {
+      if (step.key === "country" && finalValue) {
         const idx = parseInt(finalValue) - 1;
-        if (idx >= 0 && idx < AR_CITIES.length) {
-          finalValue = AR_CITIES[idx];
-        }
+        if (idx >= 0 && idx < COUNTRIES_LIST.length) finalValue = COUNTRIES_LIST[idx];
+      }
+      if (step.key === "city" && finalValue) {
+        const cities = CITIES_BY_COUNTRY[submitState.data.country] || [];
+        const idx = parseInt(finalValue) - 1;
+        if (idx >= 0 && idx < cities.length) finalValue = cities[idx];
       }
       if (step.key === "type" && finalValue) {
         const idx = parseInt(finalValue) - 1;
-        if (idx >= 0 && idx < TYPE_OPTIONS.length) {
-          finalValue = TYPE_OPTIONS[idx];
-        }
+        if (idx >= 0 && idx < TYPE_OPTIONS.length) finalValue = TYPE_OPTIONS[idx];
       }
 
       submitState.data[step.key] = finalValue;
       submitState.step++;
+
+      // Skip city step if country has no city list and user can't select
+      if (submitState.step < SUBMIT_STEPS.length) {
+        const nextStep = SUBMIT_STEPS[submitState.step];
+        if (nextStep.key === "city") {
+          const cities = CITIES_BY_COUNTRY[submitState.data.country] || [];
+          if (cities.length === 0) {
+            submitState.data.city = "";
+            submitState.step++;
+          }
+        }
+      }
 
       if (submitState.step >= SUBMIT_STEPS.length) {
         await finishSubmit();
         return;
       }
 
-      // Show options for next step if needed
       const nextStep = SUBMIT_STEPS[submitState.step];
       if (nextStep.beforePrompt) nextStep.beforePrompt();
       setStepPrompt();
@@ -521,6 +584,7 @@ const sorted = filtered.sort((a, b) => {
       const body = [
         "## " + d.name, "",
         "- **Fecha**: " + d.date_start + (d.date_end ? " - " + d.date_end : ""),
+        d.country ? "- **Pais**: " + d.country : "",
         d.city ? "- **Ciudad**: " + d.city : "",
         d.type ? "- **Tipo**: " + d.type : "",
         d.location ? "- **Lugar**: " + d.location : "",
@@ -529,7 +593,7 @@ const sorted = filtered.sort((a, b) => {
         d.description ? "\n### Descripcion\n" + d.description : "",
       ].filter(Boolean).join("\n");
 
-      const issueUrl = "https://github.com/ainponce/hackathons-ar/issues/new?title=" +
+      const issueUrl = "https://github.com/ainponce/hackathones/issues/new?title=" +
         encodeURIComponent("[hackathon] " + d.name) +
         "&body=" + encodeURIComponent(body) +
         "&labels=hackathon-submission";
@@ -548,8 +612,13 @@ const sorted = filtered.sort((a, b) => {
     function extractFlag(args, flag) {
       const idx = args.indexOf(flag);
       if (idx === -1) return null;
-      const val = args.slice(idx + 1).join(" ").trim();
-      return val || null;
+      // Collect all words after the flag until next flag or end
+      const rest = [];
+      for (let i = idx + 1; i < args.length; i++) {
+        if (args[i].startsWith("--")) break;
+        rest.push(args[i]);
+      }
+      return rest.join(" ").trim() || null;
     }
 
     async function handleCommand(raw) {
@@ -576,23 +645,11 @@ const sorted = filtered.sort((a, b) => {
       lockInput();
 
       switch (cmd) {
-        case "help":
-          await cmdHelp();
-          break;
-        case "list":
-        case "ls":
-          await cmdList(args);
-          break;
-        case "submit":
-          await startSubmit();
-          break;
-        case "clear":
-        case "cls":
-          cmdClear();
-          break;
-        case "about":
-          await cmdAbout();
-          break;
+        case "help": await cmdHelp(); break;
+        case "list": case "ls": await cmdList(args); break;
+        case "submit": await startSubmit(); break;
+        case "clear": case "cls": cmdClear(); break;
+        case "about": await cmdAbout(); break;
         default:
           await typePrint("comando no reconocido: " + esc(cmd), "muted", 15);
           await typePrint('escribe "help" para ver los comandos disponibles.', "muted", 10);
@@ -601,29 +658,74 @@ const sorted = filtered.sort((a, b) => {
       unlockInput();
     }
 
-    // --- Input ---
+    // --- Autocomplete ---
+    const COMMANDS = ["help", "list", "submit", "clear", "about"];
+    const FLAGS = ["--pais", "--ciudad", "--tipo", "--tag"];
+    let suggestion = "";
+
+    function getSuggestion(input) {
+      if (!input || submitState !== null) return "";
+      const parts = input.split(/\s+/);
+      const last = parts[parts.length - 1].toLowerCase();
+      if (!last) return "";
+      if (parts.length === 1) {
+        const match = COMMANDS.find(c => c.startsWith(last) && c !== last);
+        return match ? match.slice(last.length) : "";
+      }
+      if (parts[0].toLowerCase() === "list" && last.startsWith("-")) {
+        const match = FLAGS.find(f => f.startsWith(last) && f !== last);
+        return match ? match.slice(last.length) : "";
+      }
+      return "";
+    }
+
+    const ghostMirror = document.getElementById("ghost-mirror");
+
+    function updateSuggestion() {
+      suggestion = getSuggestion(cmdInput.value);
+      document.getElementById("autocomplete-ghost").textContent = suggestion;
+      ghostMirror.textContent = cmdInput.value;
+    }
+
+    cmdInput.addEventListener("input", () => updateSuggestion());
 
     cmdInput.addEventListener("keydown", (e) => {
+      if (e.key === "Tab") {
+        e.preventDefault();
+        if (suggestion) { cmdInput.value += suggestion; updateSuggestion(); }
+        return;
+      }
+      if (e.key === "c" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        if (submitState !== null) {
+          printRaw("^C");
+          typePrint("envio cancelado.", "muted", 15);
+          submitState = null;
+          resetPrompt();
+          cmdInput.value = "";
+          unlockInput();
+        } else if (cmdInput.value) {
+          printRaw("$ " + cmdInput.value + "^C", "muted");
+          cmdInput.value = "";
+        }
+        updateSuggestion();
+        return;
+      }
       if (isTyping) { e.preventDefault(); return; }
       if (e.key === "Enter") {
         const val = cmdInput.value;
         cmdInput.value = "";
+        suggestion = "";
+        updateSuggestion();
         handleCommand(val);
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
-        if (historyIndex > 0) {
-          historyIndex--;
-          cmdInput.value = history[historyIndex];
-        }
+        if (historyIndex > 0) { historyIndex--; cmdInput.value = history[historyIndex]; updateSuggestion(); }
       } else if (e.key === "ArrowDown") {
         e.preventDefault();
-        if (historyIndex < history.length - 1) {
-          historyIndex++;
-          cmdInput.value = history[historyIndex];
-        } else {
-          historyIndex = history.length;
-          cmdInput.value = "";
-        }
+        if (historyIndex < history.length - 1) { historyIndex++; cmdInput.value = history[historyIndex]; }
+        else { historyIndex = history.length; cmdInput.value = ""; }
+        updateSuggestion();
       }
     });
 
@@ -641,38 +743,25 @@ const sorted = filtered.sort((a, b) => {
     let phActive = true;
 
     function typePhrase(text, el, speed, cb) {
-      let i = 0;
-      el.textContent = "";
+      let i = 0; el.textContent = "";
       function tick() {
-        if (i < text.length) {
-          el.textContent += text[i++];
-          phTimer = setTimeout(tick, speed);
-        } else {
-          // Pause, then erase
-          phTimer = setTimeout(() => erasePhrase(el, speed * 0.5, cb), 2000);
-        }
+        if (i < text.length) { el.textContent += text[i++]; phTimer = setTimeout(tick, speed); }
+        else { phTimer = setTimeout(() => erasePhrase(el, speed * 0.5, cb), 2000); }
       }
       tick();
     }
 
     function erasePhrase(el, speed, cb) {
       function tick() {
-        if (el.textContent.length > 0) {
-          el.textContent = el.textContent.slice(0, -1);
-          phTimer = setTimeout(tick, speed);
-        } else {
-          phTimer = setTimeout(cb, 300);
-        }
+        if (el.textContent.length > 0) { el.textContent = el.textContent.slice(0, -1); phTimer = setTimeout(tick, speed); }
+        else { phTimer = setTimeout(cb, 300); }
       }
       tick();
     }
 
     function cyclePlaceholder() {
       if (!phActive) return;
-      typePhrase(PH_HINTS[phIndex], phEl, 40, () => {
-        phIndex = (phIndex + 1) % PH_HINTS.length;
-        cyclePlaceholder();
-      });
+      typePhrase(PH_HINTS[phIndex], phEl, 40, () => { phIndex = (phIndex + 1) % PH_HINTS.length; cyclePlaceholder(); });
     }
 
     function stopPlaceholder() {
@@ -682,26 +771,7 @@ const sorted = filtered.sort((a, b) => {
       phEl.style.display = "none";
     }
 
-    cmdInput.addEventListener("input", () => {
-      if (cmdInput.value.length > 0) stopPlaceholder();
-      else if (!phActive) {
-        phActive = true;
-        phEl.style.display = "";
-        phIndex = 0;
-        cyclePlaceholder();
-      }
-    });
-
-    cmdInput.addEventListener("focus", () => {
-      if (cmdInput.value.length === 0 && !phActive) {
-        phActive = true;
-        phEl.style.display = "";
-        phIndex = 0;
-        cyclePlaceholder();
-      }
-    });
-
-    // Start cycling on boot
+    cmdInput.addEventListener("input", stopPlaceholder, { once: true });
     cyclePlaceholder();
   </script>
 </BaseLayout>
