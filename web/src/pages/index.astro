@@ -131,6 +131,7 @@ const sorted = filtered.sort((a, b) => {
       <span class="prompt">$&nbsp;</span>
       <div class="input-wrap">
         <input id="cmd" type="text" autofocus autocomplete="off" spellcheck="false" />
+        <span id="autocomplete-ghost" class="autocomplete-ghost"></span>
         <span id="placeholder" class="placeholder-text"></span>
       </div>
     </div>
@@ -326,7 +327,7 @@ const sorted = filtered.sort((a, b) => {
         'listado de hackathones en argentina.',
         'fuentes: x/twitter, lu.ma',
         '',
-        '<a class="link" href="https://github.com/ainponce/hackathons-ar" target="_blank" rel="noopener">github.com/ainponce/hackathons-ar</a>',
+        '<a class="link" href="https://github.com/ainponce/hackathones" target="_blank" rel="noopener">github.com/ainponce/hackathones</a>',
         '',
         'hecho en argentina | 2026',
       ].join('\n'), null, 8);
@@ -529,7 +530,7 @@ const sorted = filtered.sort((a, b) => {
         d.description ? "\n### Descripcion\n" + d.description : "",
       ].filter(Boolean).join("\n");
 
-      const issueUrl = "https://github.com/ainponce/hackathons-ar/issues/new?title=" +
+      const issueUrl = "https://github.com/ainponce/hackathones/issues/new?title=" +
         encodeURIComponent("[hackathon] " + d.name) +
         "&body=" + encodeURIComponent(body) +
         "&labels=hackathon-submission";
@@ -603,7 +604,56 @@ const sorted = filtered.sort((a, b) => {
 
     // --- Input ---
 
+    // --- Autocomplete ---
+    const COMMANDS = ["help", "list", "submit", "clear", "about"];
+    const FLAGS = ["--ciudad", "--tipo", "--tag"];
+    let suggestion = "";
+
+    function getSuggestion(input) {
+      if (!input || submitState !== null) return "";
+      const parts = input.split(/\s+/);
+      const last = parts[parts.length - 1].toLowerCase();
+      if (!last) return "";
+
+      // First word: suggest commands
+      if (parts.length === 1) {
+        const match = COMMANDS.find(c => c.startsWith(last) && c !== last);
+        return match ? match.slice(last.length) : "";
+      }
+
+      // After "list": suggest flags
+      if (parts[0].toLowerCase() === "list") {
+        if (last.startsWith("-")) {
+          const match = FLAGS.find(f => f.startsWith(last) && f !== last);
+          return match ? match.slice(last.length) : "";
+        }
+      }
+
+      return "";
+    }
+
+    function updateSuggestion() {
+      suggestion = getSuggestion(cmdInput.value);
+      const ghostEl = document.getElementById("autocomplete-ghost");
+      ghostEl.textContent = suggestion;
+    }
+
+    cmdInput.addEventListener("input", () => {
+      updateSuggestion();
+    });
+
     cmdInput.addEventListener("keydown", (e) => {
+      // Tab: accept autocomplete
+      if (e.key === "Tab") {
+        e.preventDefault();
+        if (suggestion) {
+          cmdInput.value += suggestion;
+          suggestion = "";
+          updateSuggestion();
+        }
+        return;
+      }
+
       // Ctrl+C: cancel submit or clear input
       if (e.key === "c" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
@@ -618,18 +668,22 @@ const sorted = filtered.sort((a, b) => {
           printRaw("$ " + cmdInput.value + "^C", "muted");
           cmdInput.value = "";
         }
+        updateSuggestion();
         return;
       }
       if (isTyping) { e.preventDefault(); return; }
       if (e.key === "Enter") {
         const val = cmdInput.value;
         cmdInput.value = "";
+        suggestion = "";
+        updateSuggestion();
         handleCommand(val);
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
         if (historyIndex > 0) {
           historyIndex--;
           cmdInput.value = history[historyIndex];
+          updateSuggestion();
         }
       } else if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -640,6 +694,7 @@ const sorted = filtered.sort((a, b) => {
           historyIndex = history.length;
           cmdInput.value = "";
         }
+        updateSuggestion();
       }
     });
 

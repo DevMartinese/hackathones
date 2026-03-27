@@ -136,6 +136,12 @@ a {
   align-items: center;
 }
 
+#input-line .autocomplete-ghost {
+  color: #ccc;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
 #input-line .placeholder-text {
   position: absolute;
   left: 0;
