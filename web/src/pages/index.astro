@@ -154,8 +154,9 @@ const sorted = filtered.sort((a, b) => {
     <div id="input-line">
       <span class="prompt">$&nbsp;</span>
       <div class="input-wrap">
-        <input id="cmd" type="text" autofocus autocomplete="off" spellcheck="false" />
-        <span id="autocomplete-ghost" class="autocomplete-ghost"></span>
+        <span class="input-sizer" id="input-sizer" data-value="">
+          <input id="cmd" type="text" autofocus autocomplete="off" spellcheck="false" />
+        </span><span id="autocomplete-ghost" class="autocomplete-ghost"></span>
         <span id="placeholder" class="placeholder-text"></span>
       </div>
     </div>
@@ -677,12 +678,15 @@ const sorted = filtered.sort((a, b) => {
       return "";
     }
 
+    const inputSizer = document.getElementById("input-sizer");
+
     function updateSuggestion() {
       suggestion = getSuggestion(cmdInput.value);
       document.getElementById("autocomplete-ghost").textContent = suggestion;
+      inputSizer.dataset.value = cmdInput.value;
     }
 
-    cmdInput.addEventListener("input", () => updateSuggestion());
+    cmdInput.addEventListener("input", () => { inputSizer.dataset.value = cmdInput.value; updateSuggestion(); });
 
     cmdInput.addEventListener("keydown", (e) => {
       if (e.key === "Tab") {

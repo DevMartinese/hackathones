@@ -136,6 +136,26 @@ a {
   align-items: center;
 }
 
+#input-line .input-sizer {
+  display: inline-grid;
+  align-items: center;
+}
+
+#input-line .input-sizer::after {
+  content: attr(data-value);
+  visibility: hidden;
+  white-space: pre;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-base);
+  grid-area: 1 / 1;
+}
+
+#input-line .input-sizer input {
+  grid-area: 1 / 1;
+  width: auto;
+  min-width: 1ch;
+}
+
 #input-line .autocomplete-ghost {
   color: #ccc;
   pointer-events: none;
