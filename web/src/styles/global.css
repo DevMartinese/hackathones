@@ -132,39 +132,40 @@ a {
 #input-line .input-wrap {
   position: relative;
   flex: 1;
+}
+
+#input-line .ghost-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-base);
+  line-height: inherit;
   display: flex;
   align-items: center;
 }
 
-#input-line .input-sizer {
-  display: inline-grid;
-  align-items: center;
-}
-
-#input-line .input-sizer::after {
-  content: attr(data-value);
+#input-line #ghost-mirror {
   visibility: hidden;
   white-space: pre;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-base);
-  grid-area: 1 / 1;
-}
-
-#input-line .input-sizer input {
-  grid-area: 1 / 1;
-  width: auto;
-  min-width: 1ch;
 }
 
 #input-line .autocomplete-ghost {
   color: #ccc;
-  pointer-events: none;
-  white-space: nowrap;
 }
 
 #input-line .placeholder-text {
   position: absolute;
   left: 0;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
   color: #ccc;
   pointer-events: none;
   white-space: nowrap;
