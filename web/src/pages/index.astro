@@ -117,6 +117,101 @@ async function fetchLumaEvents(): Promise<HackathonData[]> {
   return events;
 }
 
+// --- Fetch hackathons from DoraHacks API ---
+const DORAHACKS_HEADERS = {
+  "Accept": "*/*",
+  "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+  "Referer": "https://dorahacks.io/hackathon",
+  "sec-ch-ua": '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
+  "sec-fetch-dest": "empty",
+  "sec-fetch-mode": "cors",
+  "sec-fetch-site": "same-origin",
+};
+
+async function fetchDoraHacksEvents(): Promise<HackathonData[]> {
+  const events: HackathonData[] = [];
+  const pageSize = 200;
+
+  // First request to get total count
+  try {
+    const firstRes = await fetch(
+      `https://dorahacks.io/api/hackathon/?page=1&page_size=${pageSize}`,
+      { headers: DORAHACKS_HEADERS }
+    );
+    if (!firstRes.ok) return events;
+    const firstData = await firstRes.json();
+    const totalPages = Math.ceil((firstData.count || 0) / pageSize);
+    const allResults = [...(firstData.results || [])];
+
+    // Fetch remaining pages
+    for (let page = 2; page <= totalPages; page++) {
+      try {
+        const res = await fetch(
+          `https://dorahacks.io/api/hackathon/?page=${page}&page_size=${pageSize}`,
+          { headers: DORAHACKS_HEADERS }
+        );
+        if (!res.ok) break;
+        const data = await res.json();
+        allResults.push(...(data.results || []));
+      } catch { break; }
+    }
+
+    for (const h of allResults) {
+      if (!h.visible || h.archived) continue;
+
+      const endDate = h.end_time
+        ? new Date(h.end_time * 1000).toISOString().slice(0, 10)
+        : null;
+      if (endDate && endDate < today) continue;
+
+      const isVirtual = h.participation_form === "Virtual";
+      const isIRL = h.participation_form === "IRL";
+
+      // For IRL events, only include Americas
+      if (isIRL) {
+        const searchText = `${h.title} ${h.venue_address || ""} ${h.venue_name || ""}`
+          .toLowerCase();
+        const hasAmericas = AMERICAS_COUNTRIES.some(c => searchText.includes(c));
+        if (!hasAmericas) continue;
+      }
+
+      // Strip markdown from description
+      const rawDesc = (h.description || "")
+        .replace(/!\[.*?\]\(.*?\)/g, "")
+        .replace(/\[([^\]]*)\]\(.*?\)/g, "$1")
+        .replace(/#{1,6}\s+/g, "")
+        .replace(/\*\*([^*]*)\*\*/g, "$1")
+        .replace(/[*_~`]/g, "")
+        .replace(/<[^>]+>/g, "")
+        .replace(/\n{2,}/g, " ")
+        .trim()
+        .slice(0, 300);
+
+      const tags = h.field
+        ? h.field.split(",").map((t: string) => t.trim().toLowerCase()).filter(Boolean)
+        : [];
+
+      events.push({
+        id: "dh-" + h.id,
+        name: h.title,
+        date_start: h.start_time
+          ? new Date(h.start_time * 1000).toISOString().slice(0, 10)
+          : null,
+        date_end: endDate,
+        country: isVirtual ? "Online" : null,
+        city: null,
+        location: [h.venue_name, h.venue_address].filter(Boolean).join(", ") || null,
+        url: `https://dorahacks.io/hackathon/${h.uname || h.id}`,
+        source: "dorahacks",
+        type: isIRL ? "presencial" : isVirtual ? "online" : null,
+        tags,
+        description: rawDesc,
+      });
+    }
+  } catch { /* DoraHacks API unavailable */ }
+  return events;
+}
+
 // --- Fetch hackathon submissions from GitHub Issues ---
 // Supports two body formats:
 // 1. Terminal submit: - **Fecha**: 2026-04-16 - 2026-04-16
@@ -206,6 +301,7 @@ try {
 } catch { /* no local data */ }
 
 const lumaEvents = await fetchLumaEvents();
+const doraEvents = await fetchDoraHacksEvents();
 const ghEvents = await fetchGitHubIssues();
 
 // --- Deduplication by name similarity + date proximity ---
@@ -243,9 +339,9 @@ function isDuplicate(event: HackathonData, existing: HackathonData[]): boolean {
   );
 }
 
-// Merge with priority: comunidad > luma > scraper (later sources enrich, not replace)
+// Merge with priority: comunidad > luma > dorahacks > scraper
 const merged: HackathonData[] = [...jsonEvents];
-for (const e of [...ghEvents, ...lumaEvents]) {
+for (const e of [...ghEvents, ...lumaEvents, ...doraEvents]) {
   if (!isDuplicate(e, merged)) {
     merged.push(e);
   }
@@ -374,7 +470,6 @@ const sorted = filtered.sort((a, b) => {
         h.country,
         h.city,
         h.type,
-        "via " + h.source,
       ].filter(Boolean).join("  /  ");
 
       let html = '<div class="event-block">';
