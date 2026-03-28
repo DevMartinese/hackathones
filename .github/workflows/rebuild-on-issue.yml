@@ -1,12 +1,16 @@
-name: Rebuild on Hackathon Issue
+name: Rebuild on Hackathon Issue or Weekly
 
 on:
   issues:
     types: [opened, edited, closed, reopened]
+  schedule:
+    - cron: "0 8 * * 1" # Lunes a las 8 UTC
 
 jobs:
   trigger-deploy:
-    if: contains(github.event.issue.title, '[hackathon]')
+    if: >
+      github.event_name == 'schedule' ||
+      contains(github.event.issue.title, '[hackathon]')
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Vercel Deploy Hook
