@@ -300,9 +300,11 @@ try {
   jsonEvents = collection.map((h) => h.data as unknown as HackathonData);
 } catch { /* no local data */ }
 
-const lumaEvents = await fetchLumaEvents();
-const doraEvents = await fetchDoraHacksEvents();
-const ghEvents = await fetchGitHubIssues();
+// In dev mode, skip remote fetches if local data exists (use `pnpm run fetch` to populate)
+const skipRemote = import.meta.env.DEV && jsonEvents.length > 0;
+const lumaEvents = skipRemote ? [] : await fetchLumaEvents();
+const doraEvents = skipRemote ? [] : await fetchDoraHacksEvents();
+const ghEvents = skipRemote ? [] : await fetchGitHubIssues();
 
 // --- Deduplication by name similarity + date proximity ---
 function normalize(s: string): string {
@@ -384,6 +386,7 @@ const sorted = filtered.sort((a, b) => {
     let historyIndex = -1;
     let submitState = null;
     let isTyping = false;
+    let suppressAutoScroll = false;
 
     // --- Typing engine ---
 
@@ -402,7 +405,7 @@ const sorted = filtered.sort((a, b) => {
               if (end !== -1 && end - i < 8) { el.innerHTML += text.slice(i, end + 1); i = end + 1; }
               else { el.innerHTML += text[i++]; }
             } else { el.innerHTML += text[i++]; }
-            window.scrollTo(0, document.body.scrollHeight);
+            if (!suppressAutoScroll) window.scrollTo(0, document.body.scrollHeight);
             setTimeout(tick, speed);
           } else { el.classList.remove("typing-cursor"); resolve(); }
         }
@@ -418,7 +421,7 @@ const sorted = filtered.sort((a, b) => {
       div.style.opacity = "1";
       output.appendChild(div);
       await typeText(html, div, speed);
-      window.scrollTo(0, document.body.scrollHeight);
+      if (!suppressAutoScroll) window.scrollTo(0, document.body.scrollHeight);
     }
 
     function print(html, cls) {
@@ -427,7 +430,7 @@ const sorted = filtered.sort((a, b) => {
       div.className = "line" + (cls ? " " + cls : "");
       div.innerHTML = html;
       output.appendChild(div);
-      window.scrollTo(0, document.body.scrollHeight);
+      if (!suppressAutoScroll) window.scrollTo(0, document.body.scrollHeight);
     }
 
     function printRaw(text, cls) {
@@ -436,7 +439,7 @@ const sorted = filtered.sort((a, b) => {
       div.className = "line" + (cls ? " " + cls : "");
       div.textContent = text;
       output.appendChild(div);
-      window.scrollTo(0, document.body.scrollHeight);
+      if (!suppressAutoScroll) window.scrollTo(0, document.body.scrollHeight);
     }
 
     function br() {
@@ -457,7 +460,7 @@ const sorted = filtered.sort((a, b) => {
 
     function formatDate(start, end) {
       if (!start) return "fecha a confirmar";
-      const opts = { day: "numeric", month: "short" };
+      const opts = { day: "numeric", month: "short", year: "numeric" };
       const s = new Date(start + "T00:00:00").toLocaleDateString("es-AR", opts);
       if (!end || start === end) return s;
       const e = new Date(end + "T00:00:00").toLocaleDateString("es-AR", opts);
@@ -484,7 +487,7 @@ const sorted = filtered.sort((a, b) => {
     }
 
     function lockInput() { isTyping = true; cmdInput.disabled = true; }
-    function unlockInput() { isTyping = false; cmdInput.disabled = false; cmdInput.focus(); }
+    function unlockInput(preventScroll) { isTyping = false; cmdInput.disabled = false; cmdInput.focus({ preventScroll: !!preventScroll }); }
 
     // --- Commands ---
 
@@ -537,13 +540,36 @@ const sorted = filtered.sort((a, b) => {
         return;
       }
 
+      // Mark where this output starts so we can scroll to it
+      const listAnchor = document.createElement("div");
+      output.appendChild(listAnchor);
+
       await typePrint(
         results.length + " hackathon" + (results.length !== 1 ? "es" : "") +
         " encontrado" + (results.length !== 1 ? "s" : ""),
-        "muted", 12
+        "muted", 20
       );
       br();
-      results.forEach(printEvent);
+
+      // Suppress auto-scroll while rendering events
+      suppressAutoScroll = true;
+
+      // Reveal events progressively with staggered delay
+      for (let i = 0; i < results.length; i++) {
+        printEvent(results[i]);
+        const lastChild = output.lastElementChild;
+        if (lastChild) {
+          lastChild.style.opacity = "0";
+          lastChild.style.transition = "opacity 0.25s ease-in";
+        }
+        await new Promise(r => setTimeout(r, 60));
+        if (lastChild) lastChild.style.opacity = "1";
+      }
+
+      suppressAutoScroll = false;
+
+      // Scroll to the beginning of the list, not the bottom
+      listAnchor.scrollIntoView({ behavior: "smooth", block: "start" });
     }
 
     async function cmdAbout() {
@@ -855,9 +881,10 @@ const sorted = filtered.sort((a, b) => {
 
       lockInput();
 
+      let scrollHandled = false;
       switch (cmd) {
         case "help": await cmdHelp(); break;
-        case "list": case "ls": await cmdList(args); break;
+        case "list": case "ls": await cmdList(args); scrollHandled = true; break;
         case "submit": await startSubmit(); break;
         case "clear": case "cls": cmdClear(); break;
         case "about": await cmdAbout(); break;
@@ -866,7 +893,7 @@ const sorted = filtered.sort((a, b) => {
           await typePrint('escribe "help" para ver los comandos disponibles.', "muted", 10);
       }
       br();
-      unlockInput();
+      unlockInput(scrollHandled);
     }
 
     // --- Autocomplete ---
