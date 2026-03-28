@@ -252,9 +252,9 @@ async function fetchGitHubIssues(): Promise<HackathonData[]> {
       let date_end: string | null = null;
       const fechaRaw = boldField("Fecha");
       if (fechaRaw) {
-        const parts = fechaRaw.split(/\s*-\s*/);
-        date_start = parts[0]?.match(/\d{4}-\d{2}-\d{2}/)?.[0] || null;
-        date_end = parts[1]?.match(/\d{4}-\d{2}-\d{2}/)?.[0] || date_start;
+        const dates = fechaRaw.match(/\d{4}-\d{2}-\d{2}/g) || [];
+        date_start = dates[0] || null;
+        date_end = dates[1] || date_start;
       } else {
         const startRaw = formField("Fecha inicio");
         const endRaw = formField("Fecha fin");
