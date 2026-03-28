@@ -1,0 +1,97 @@
+name: Agregar hackathon
+description: Sumá un hackathon al directorio
+title: "[hackathon] "
+labels: []
+body:
+  - type: input
+    id: name
+    attributes:
+      label: Nombre del hackathon
+      placeholder: "Ej: AI Buildathon Buenos Aires"
+    validations:
+      required: true
+
+  - type: input
+    id: date_start
+    attributes:
+      label: Fecha inicio
+      placeholder: "YYYY-MM-DD"
+    validations:
+      required: true
+
+  - type: input
+    id: date_end
+    attributes:
+      label: Fecha fin
+      placeholder: "YYYY-MM-DD (dejar vacío si es un solo día)"
+
+  - type: dropdown
+    id: country
+    attributes:
+      label: Pais
+      options:
+        - Argentina
+        - Brasil
+        - Chile
+        - Colombia
+        - Mexico
+        - Peru
+        - Uruguay
+        - Paraguay
+        - Ecuador
+        - Bolivia
+        - Venezuela
+        - Costa Rica
+        - Panama
+        - Guatemala
+        - USA
+        - Canada
+    validations:
+      required: true
+
+  - type: input
+    id: city
+    attributes:
+      label: Ciudad
+      placeholder: "Ej: Buenos Aires"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: type
+    attributes:
+      label: Tipo
+      options:
+        - presencial
+        - online
+        - hibrido
+    validations:
+      required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: Lugar
+      placeholder: "Dirección o venue (opcional)"
+
+  - type: input
+    id: url
+    attributes:
+      label: URL del evento
+      placeholder: "https://..."
+    validations:
+      required: true
+
+  - type: input
+    id: tags
+    attributes:
+      label: Tags
+      placeholder: "ai, web3, fintech (separados por coma)"
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Descripcion
+      placeholder: "Breve descripción del evento"
+    validations:
+      required: true

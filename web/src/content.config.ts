@@ -11,7 +11,7 @@ const hackathons = defineCollection({
     city: z.string().nullable(),
     location: z.string().nullable(),
     url: z.string().nullable(),
-    source: z.enum(["x", "luma"]),
+    source: z.enum(["x", "luma", "comunidad"]),
     type: z.enum(["presencial", "online", "hibrido"]).nullable(),
     tags: z.array(z.string()),
     description: z.string(),
