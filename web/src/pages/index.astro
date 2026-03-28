@@ -117,6 +117,87 @@ async function fetchLumaEvents(): Promise<HackathonData[]> {
   return events;
 }
 
+// --- Fetch hackathon submissions from GitHub Issues ---
+// Supports two body formats:
+// 1. Terminal submit: - **Fecha**: 2026-04-16 - 2026-04-16
+// 2. GitHub issue form: ### Fecha inicio\n\n2026-04-16
+async function fetchGitHubIssues(): Promise<HackathonData[]> {
+  const events: HackathonData[] = [];
+  try {
+    const res = await fetch(
+      "https://api.github.com/repos/ainponce/hackathones/issues?state=open&per_page=100",
+      { headers: { "Accept": "application/vnd.github.v3+json", "User-Agent": "hackathones-build" } }
+    );
+    if (!res.ok) return events;
+    const issues = await res.json();
+
+    for (const issue of issues) {
+      if (issue.pull_request) continue;
+      if (!issue.title?.toLowerCase().startsWith("[hackathon]")) continue;
+      const body: string = issue.body || "";
+
+      // Format 1: - **Label**: value (from terminal submit)
+      const boldField = (label: string): string | null => {
+        const m = body.match(new RegExp(`\\*\\*${label}\\*\\*:\\s*(.+)`, "i"));
+        return m ? m[1].trim() : null;
+      };
+
+      // Format 2: ### Label\n\nvalue (from GitHub issue form)
+      const formField = (label: string): string | null => {
+        const m = body.match(new RegExp(`###\\s*${label}\\s*\\n+([^#\\n][^\\n]*)`, "i"));
+        return m ? m[1].trim() || null : null;
+      };
+
+      const field = (boldLabel: string, formLabel?: string): string | null => {
+        return boldField(boldLabel) || formField(formLabel || boldLabel) || null;
+      };
+
+      // Parse dates - handle both "Fecha: start - end" and separate "Fecha inicio"/"Fecha fin"
+      let date_start: string | null = null;
+      let date_end: string | null = null;
+      const fechaRaw = boldField("Fecha");
+      if (fechaRaw) {
+        const parts = fechaRaw.split(/\s*-\s*/);
+        date_start = parts[0]?.match(/\d{4}-\d{2}-\d{2}/)?.[0] || null;
+        date_end = parts[1]?.match(/\d{4}-\d{2}-\d{2}/)?.[0] || date_start;
+      } else {
+        const startRaw = formField("Fecha inicio");
+        const endRaw = formField("Fecha fin");
+        date_start = startRaw?.match(/\d{4}-\d{2}-\d{2}/)?.[0] || null;
+        date_end = endRaw?.match(/\d{4}-\d{2}-\d{2}/)?.[0] || date_start;
+      }
+
+      if (date_end && date_end < today) continue;
+
+      const tagsRaw = field("Tags");
+      const tags = tagsRaw ? tagsRaw.split(/,\s*/).map(t => t.trim()).filter(Boolean) : [];
+
+      // Description: ### Descripcion\n...(rest of body)
+      const descMatch = body.match(/###\s*Descripcion\s*\n+([\s\S]*?)$/i);
+      const description = descMatch ? descMatch[1].trim().slice(0, 300) : "";
+
+      const name = issue.title.replace(/^\[hackathon\]\s*/i, "").trim();
+      const id = "gh-" + issue.number;
+
+      events.push({
+        id,
+        name,
+        date_start,
+        date_end,
+        country: field("Pais"),
+        city: field("Ciudad"),
+        location: field("Lugar"),
+        url: field("URL", "URL del evento"),
+        source: "comunidad",
+        type: field("Tipo"),
+        tags,
+        description,
+      });
+    }
+  } catch { /* GitHub API unavailable */ }
+  return events;
+}
+
 let jsonEvents: HackathonData[] = [];
 try {
   const { getCollection } = await import("astro:content");
@@ -125,13 +206,48 @@ try {
 } catch { /* no local data */ }
 
 const lumaEvents = await fetchLumaEvents();
+const ghEvents = await fetchGitHubIssues();
 
-const seen = new Set(jsonEvents.map(e => e.id));
-const merged = [...jsonEvents];
-for (const e of lumaEvents) {
-  if (!seen.has(e.id)) {
+// --- Deduplication by name similarity + date proximity ---
+function normalize(s: string): string {
+  return s.toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function wordSet(s: string): Set<string> {
+  return new Set(normalize(s).split(" ").filter(w => w.length > 2));
+}
+
+function nameSimilarity(a: string, b: string): number {
+  const setA = wordSet(a);
+  const setB = wordSet(b);
+  if (setA.size === 0 || setB.size === 0) return 0;
+  let common = 0;
+  for (const w of setA) if (setB.has(w)) common++;
+  return common / Math.max(setA.size, setB.size);
+}
+
+function datesClose(a: HackathonData, b: HackathonData): boolean {
+  if (!a.date_start || !b.date_start) return true; // can't tell, assume possible match
+  const diff = Math.abs(new Date(a.date_start).getTime() - new Date(b.date_start).getTime());
+  return diff <= 3 * 86400000; // 3 days
+}
+
+function isDuplicate(event: HackathonData, existing: HackathonData[]): boolean {
+  return existing.some(e =>
+    e.id === event.id ||
+    (nameSimilarity(e.name, event.name) >= 0.5 && datesClose(e, event))
+  );
+}
+
+// Merge with priority: comunidad > luma > scraper (later sources enrich, not replace)
+const merged: HackathonData[] = [...jsonEvents];
+for (const e of [...ghEvents, ...lumaEvents]) {
+  if (!isDuplicate(e, merged)) {
     merged.push(e);
-    seen.add(e.id);
   }
 }
 
