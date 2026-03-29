@@ -31,8 +31,27 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 
     <div class="row">
       <div class="field">
-        <label for="city">ciudad</label>
-        <input type="text" id="city" name="city" placeholder="Buenos Aires" />
+        <label for="country">pais</label>
+        <select id="country" name="country">
+          <option value="">--</option>
+          <option value="Global">Global</option>
+          <option value="Argentina">Argentina</option>
+          <option value="Brasil">Brasil</option>
+          <option value="Chile">Chile</option>
+          <option value="Colombia">Colombia</option>
+          <option value="Mexico">Mexico</option>
+          <option value="Peru">Peru</option>
+          <option value="Uruguay">Uruguay</option>
+          <option value="Paraguay">Paraguay</option>
+          <option value="Ecuador">Ecuador</option>
+          <option value="Bolivia">Bolivia</option>
+          <option value="Venezuela">Venezuela</option>
+          <option value="Costa Rica">Costa Rica</option>
+          <option value="Panama">Panama</option>
+          <option value="Guatemala">Guatemala</option>
+          <option value="USA">USA</option>
+          <option value="Canada">Canada</option>
+        </select>
       </div>
       <div class="field">
         <label for="type">tipo</label>
@@ -43,6 +62,11 @@ import BaseLayout from "../layouts/BaseLayout.astro";
           <option value="hibrido">hibrido</option>
         </select>
       </div>
+    </div>
+
+    <div class="field" id="city-field">
+      <label for="city">ciudad</label>
+      <input type="text" id="city" name="city" placeholder="Buenos Aires" />
     </div>
 
     <div class="field">
@@ -79,6 +103,17 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 <script>
   const form = document.getElementById("submit-form") as HTMLFormElement;
   const successMsg = document.getElementById("success-msg") as HTMLElement;
+  const countrySelect = document.getElementById("country") as HTMLSelectElement;
+  const cityField = document.getElementById("city-field") as HTMLElement;
+
+  countrySelect.addEventListener("change", () => {
+    if (countrySelect.value === "Global") {
+      cityField.style.display = "none";
+      (cityField.querySelector("input") as HTMLInputElement).value = "";
+    } else {
+      cityField.style.display = "";
+    }
+  });
 
   form.addEventListener("submit", (e) => {
     e.preventDefault();
@@ -87,6 +122,7 @@ import BaseLayout from "../layouts/BaseLayout.astro";
     const name = data.get("name") as string;
     const dateStart = data.get("date_start") as string;
     const dateEnd = data.get("date_end") as string;
+    const country = data.get("country") as string;
     const city = data.get("city") as string;
     const type = data.get("type") as string;
     const location = data.get("location") as string;
@@ -98,6 +134,7 @@ import BaseLayout from "../layouts/BaseLayout.astro";
       `## ${name}`,
       "",
       `- **Fecha**: ${dateStart}${dateEnd ? ` - ${dateEnd}` : ""}`,
+      country ? `- **Pais**: ${country}` : "",
       city ? `- **Ciudad**: ${city}` : "",
       type ? `- **Tipo**: ${type}` : "",
       location ? `- **Lugar**: ${location}` : "",

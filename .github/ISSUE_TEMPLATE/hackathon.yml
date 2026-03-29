@@ -30,6 +30,7 @@ body:
     attributes:
       label: Pais
       options:
+        - Global
         - Argentina
         - Brasil
         - Chile
