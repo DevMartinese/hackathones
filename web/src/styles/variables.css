@@ -11,3 +11,11 @@
   --terminal-padding: 2rem;
   --max-width: 760px;
 }
+
+@media (max-width: 480px) {
+  :root {
+    --terminal-padding: 1rem;
+    --font-size-base: 13px;
+    --font-size-sm: 11px;
+  }
+}

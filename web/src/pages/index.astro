@@ -516,7 +516,7 @@ const sorted = filtered.sort((a, b) => {
         if (actionsHtml) actionsHtml += '  ';
         actionsHtml += '<button class="cal-btn" data-ics="' + icsId + '">[+ google cal]</button>';
       }
-      if (actionsHtml) html += '<div>' + actionsHtml + '</div>';
+      if (actionsHtml) html += '<div class="event-actions">' + actionsHtml + '</div>';
 
       html += '</div>';
       print(html);
@@ -531,15 +531,15 @@ const sorted = filtered.sort((a, b) => {
       await typePrint([
         '<span class="bold">comandos disponibles:</span>',
         '',
-        '  list                       listar todos los hackathones',
-        '  list --pais &lt;pais&gt;         filtrar por pais',
-        '  list --ciudad &lt;ciudad&gt;     filtrar por ciudad',
-        '  list --tipo &lt;tipo&gt;         filtrar por tipo (presencial/online/hibrido)',
-        '  list --tag &lt;tag&gt;           filtrar por tag',
-        '  submit                     enviar un hackathon nuevo',
-        '  clear                      limpiar la terminal',
-        '  about                      sobre este proyecto',
-        '  help                       mostrar esta ayuda',
+        '  list <span class="muted">— listar todos los hackathones</span>',
+        '  list --pais &lt;pais&gt; <span class="muted">— filtrar por pais</span>',
+        '  list --ciudad &lt;ciudad&gt; <span class="muted">— filtrar por ciudad</span>',
+        '  list --tipo &lt;tipo&gt; <span class="muted">— filtrar por tipo</span>',
+        '  list --tag &lt;tag&gt; <span class="muted">— filtrar por tag</span>',
+        '  submit <span class="muted">— enviar un hackathon nuevo</span>',
+        '  clear <span class="muted">— limpiar la terminal</span>',
+        '  about <span class="muted">— sobre este proyecto</span>',
+        '  help <span class="muted">— mostrar esta ayuda</span>',
       ].join('\n'), null, 4);
     }
 
