@@ -4,9 +4,8 @@ const year = new Date().getFullYear();
 
 <footer class="footer">
   <p class="meta">Hecho en Argentina | {year}</p>
-  <p class="meta">
+  <p class="meta links">
     <a href="/submit">$ hackathons-ar --submit</a>
-    &nbsp;&nbsp;
     <a href="https://github.com/ainponce/hackathones" target="_blank" rel="noopener noreferrer"
       >github.com/ainponce/hackathones</a
     >
@@ -23,6 +22,12 @@ const year = new Date().getFullYear();
   .meta {
     color: var(--muted);
     font-size: var(--font-size-sm);
+  }
+
+  .links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem 1rem;
   }
 
   .meta a {

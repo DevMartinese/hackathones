@@ -93,6 +93,13 @@ a {
 }
 #output .event-block:last-of-type { border-bottom: none; }
 
+#output .event-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 1rem;
+  align-items: baseline;
+}
+
 #output .cal-btn {
   font-family: inherit;
   font-size: inherit;
@@ -100,7 +107,8 @@ a {
   border: none;
   color: var(--muted);
   cursor: pointer;
-  padding: 0;
+  padding: 0.5rem 0;
+  margin: -0.5rem 0;
   text-decoration: underline;
   text-underline-offset: 2px;
   transition: color 0.2s ease;
