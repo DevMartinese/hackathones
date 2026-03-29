@@ -467,40 +467,26 @@ const sorted = filtered.sort((a, b) => {
       return s + " - " + e;
     }
 
-    function escIcs(text) {
-      return text.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n");
-    }
-
-    function downloadIcs(h) {
+    function openGoogleCalendar(h) {
       if (!h.date_start) return;
       const dtStart = h.date_start.replace(/-/g, "");
       const endDate = h.date_end || h.date_start;
       const endDt = new Date(endDate + "T00:00:00");
       endDt.setDate(endDt.getDate() + 1);
       const dtEnd = endDt.toISOString().slice(0, 10).replace(/-/g, "");
-      const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
 
-      const lines = [
-        "BEGIN:VCALENDAR",
-        "VERSION:2.0",
-        "PRODID:-//hackathons.ar//Hackathones//ES",
-        "BEGIN:VEVENT",
-        "UID:" + h.id + "@hackathons.ar",
-        "DTSTAMP:" + stamp,
-        "DTSTART;VALUE=DATE:" + dtStart,
-        "DTEND;VALUE=DATE:" + dtEnd,
-        "SUMMARY:" + escIcs(h.name),
-      ];
+      const params = new URLSearchParams({
+        action: "TEMPLATE",
+        text: h.name,
+        dates: dtStart + "/" + dtEnd,
+      });
       const loc = h.location || h.city;
-      if (loc) lines.push("LOCATION:" + escIcs(loc));
-      if (h.url) lines.push("URL:" + h.url);
-      if (h.description) lines.push("DESCRIPTION:" + escIcs(h.description));
-      lines.push("END:VEVENT", "END:VCALENDAR");
+      if (loc) params.set("location", loc);
+      var details = h.description || "";
+      if (h.url) details += (details ? "\n" : "") + h.url;
+      if (details) params.set("details", details);
 
-      const blob = new Blob([lines.join("\r\n")], { type: "text/calendar;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      window.location.href = url;
-      setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+      window.open("https://calendar.google.com/calendar/render?" + params.toString(), "_blank");
     }
 
     // Store references for calendar button click handler
@@ -528,7 +514,7 @@ const sorted = filtered.sort((a, b) => {
       if (h.url) actionsHtml += '<a class="link" href="' + esc(h.url) + '" target="_blank" rel="noopener">' + esc(h.url) + '</a>';
       if (h.date_start) {
         if (actionsHtml) actionsHtml += '  ';
-        actionsHtml += '<button class="cal-btn" data-ics="' + icsId + '">[+ calendario]</button>';
+        actionsHtml += '<button class="cal-btn" data-ics="' + icsId + '">[+ google cal]</button>';
       }
       if (actionsHtml) html += '<div>' + actionsHtml + '</div>';
 
@@ -1023,7 +1009,7 @@ const sorted = filtered.sort((a, b) => {
       if (btn) {
         e.stopPropagation();
         const h = _icsMap[btn.dataset.ics];
-        if (h) downloadIcs(h);
+        if (h) openGoogleCalendar(h);
         return;
       }
       if (!isTyping) cmdInput.focus();
