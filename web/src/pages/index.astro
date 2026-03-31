@@ -368,7 +368,7 @@ const sorted = filtered.sort((a, b) => {
     <div id="input-line">
       <span class="prompt">$&nbsp;</span>
       <div class="input-wrap">
-        <input id="cmd" type="text" autofocus autocomplete="off" spellcheck="false" />
+        <textarea id="cmd" rows="1" autofocus autocomplete="off" spellcheck="false"></textarea>
         <div class="ghost-overlay" id="ghost-overlay" aria-hidden="true">
           <span id="ghost-mirror"></span><span id="autocomplete-ghost" class="autocomplete-ghost"></span>
         </div>
@@ -897,7 +897,6 @@ const sorted = filtered.sort((a, b) => {
 
     async function handleCommand(raw) {
       const trimmed = raw.trim();
-      if (!trimmed) return;
 
       if (submitState !== null) {
         lockInput();
@@ -905,6 +904,8 @@ const sorted = filtered.sort((a, b) => {
         unlockInput();
         return;
       }
+
+      if (!trimmed) return;
 
       printRaw("$ " + trimmed, "bold");
       br();
@@ -962,7 +963,12 @@ const sorted = filtered.sort((a, b) => {
       ghostMirror.textContent = cmdInput.value;
     }
 
-    cmdInput.addEventListener("input", () => updateSuggestion());
+    function autoResize() {
+      cmdInput.style.height = "auto";
+      cmdInput.style.height = cmdInput.scrollHeight + "px";
+    }
+
+    cmdInput.addEventListener("input", () => { updateSuggestion(); autoResize(); });
 
     cmdInput.addEventListener("keydown", (e) => {
       if (e.key === "Tab") {
@@ -987,9 +993,11 @@ const sorted = filtered.sort((a, b) => {
         return;
       }
       if (isTyping) { e.preventDefault(); return; }
-      if (e.key === "Enter") {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
         const val = cmdInput.value;
         cmdInput.value = "";
+        cmdInput.style.height = "auto";
         suggestion = "";
         updateSuggestion();
         handleCommand(val);

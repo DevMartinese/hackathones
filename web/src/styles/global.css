@@ -124,7 +124,7 @@ a {
 /* Input */
 #input-line {
   display: flex;
-  align-items: center;
+  align-items: start;
   margin-top: 0.5rem;
   background: var(--bg);
   padding: 0.25rem 0;
@@ -140,15 +140,20 @@ a {
   font-weight: 400;
 }
 
-#input-line input {
+#input-line textarea {
   font-family: var(--font-mono);
   font-size: var(--font-size-base);
   background: none;
   color: var(--text);
   border: none;
   outline: none;
-  flex: 1;
+  width: 100%;
   caret-color: var(--text);
+  resize: none;
+  overflow: hidden;
+  line-height: 1.4;
+  padding: 0;
+  word-break: break-word;
 }
 
 #input-line .input-wrap {
@@ -161,15 +166,12 @@ a {
   top: 0;
   left: 0;
   right: 0;
-  bottom: 0;
   pointer-events: none;
   white-space: nowrap;
   overflow: hidden;
   font-family: var(--font-mono);
   font-size: var(--font-size-base);
-  line-height: inherit;
-  display: flex;
-  align-items: center;
+  line-height: 1.4;
 }
 
 #input-line #ghost-mirror {
@@ -185,13 +187,11 @@ a {
   position: absolute;
   left: 0;
   top: 0;
-  bottom: 0;
-  display: flex;
-  align-items: center;
   color: #ccc;
   pointer-events: none;
   white-space: nowrap;
   overflow: hidden;
+  line-height: 1.4;
 }
 
 @keyframes fadeIn {
