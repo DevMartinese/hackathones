@@ -300,8 +300,8 @@ try {
   jsonEvents = collection.map((h) => h.data as unknown as HackathonData);
 } catch { /* no local data */ }
 
-// In dev mode, skip remote fetches if local data exists (use `pnpm run fetch` to populate)
-const skipRemote = import.meta.env.DEV && jsonEvents.length > 0;
+// Skip remote fetches only if SKIP_REMOTE env var is set (e.g. SKIP_REMOTE=1 pnpm dev)
+const skipRemote = !!import.meta.env.SKIP_REMOTE;
 const lumaEvents = skipRemote ? [] : await fetchLumaEvents();
 const doraEvents = skipRemote ? [] : await fetchDoraHacksEvents();
 const ghEvents = skipRemote ? [] : await fetchGitHubIssues();
