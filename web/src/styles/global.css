@@ -157,7 +157,7 @@ a {
 
 #input-line textarea {
   font-family: var(--font-mono);
-  font-size: var(--font-size-base);
+  font-size: var(--font-size-input);
   background: none;
   color: var(--text);
   border: none;
@@ -185,7 +185,7 @@ a {
   white-space: nowrap;
   overflow: hidden;
   font-family: var(--font-mono);
-  font-size: var(--font-size-base);
+  font-size: var(--font-size-input);
   line-height: 1.4;
 }
 

@@ -6,6 +6,7 @@
   --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
   --font-size-base: 14px;
   --font-size-sm: 12px;
+  --font-size-input: 14px;
   --line-height: 1.6;
 
   --terminal-padding: 2rem;
@@ -17,5 +18,6 @@
     --terminal-padding: 1rem;
     --font-size-base: 13px;
     --font-size-sm: 11px;
+    --font-size-input: 16px;
   }
 }
