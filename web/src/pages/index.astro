@@ -375,6 +375,13 @@ const sorted = filtered.sort((a, b) => {
         <span id="placeholder" class="placeholder-text"></span>
       </div>
     </div>
+    <div id="quick-cmds" class="quick-cmds">
+      <button data-cmd="list">list</button>
+      <button data-cmd="list --legacy">--legacy</button>
+      <button data-cmd="submit">submit</button>
+      <button data-cmd="clear">clear</button>
+      <button data-cmd="help">help</button>
+    </div>
   </div>
   <script is:inline define:vars={{ hackathonsData: sorted }}>
     const HACKATHONS = hackathonsData;
@@ -516,7 +523,9 @@ const sorted = filtered.sort((a, b) => {
         if (actionsHtml) actionsHtml += '  ';
         actionsHtml += '<button class="cal-btn" data-ics="' + icsId + '">[+ google cal]</button>';
       }
-      if (actionsHtml) html += '<div class="event-actions">' + actionsHtml + '</div>';
+      if (actionsHtml) actionsHtml += '  ';
+      actionsHtml += '<button class="share-btn" data-id="' + h.id + '">[compartir]</button>';
+      html += '<div class="event-actions">' + actionsHtml + '</div>';
 
       html += '</div>';
       print(html);
@@ -536,6 +545,7 @@ const sorted = filtered.sort((a, b) => {
         '  list --ciudad &lt;ciudad&gt; <span class="muted">— filtrar por ciudad</span>',
         '  list --tipo &lt;tipo&gt; <span class="muted">— filtrar por tipo</span>',
         '  list --tag &lt;tag&gt; <span class="muted">— filtrar por tag</span>',
+        '  list --legacy <span class="muted">— ver hackathones pasadas</span>',
         '  submit <span class="muted">— enviar un hackathon nuevo</span>',
         '  clear <span class="muted">— limpiar la terminal</span>',
         '  about <span class="muted">— sobre este proyecto</span>',
@@ -544,7 +554,11 @@ const sorted = filtered.sort((a, b) => {
     }
 
     async function cmdList(args) {
-      let results = [...HACKATHONS];
+      const now = new Date().toISOString().slice(0, 10);
+      let results = HACKATHONS.filter(h => {
+        const endDate = h.date_end || h.date_start;
+        return !endDate || endDate >= now;
+      });
       const pais = extractFlag(args, "--pais");
       const ciudad = extractFlag(args, "--ciudad");
       const tipo = extractFlag(args, "--tipo");
@@ -605,6 +619,55 @@ const sorted = filtered.sort((a, b) => {
       suppressAutoScroll = false;
 
       // Scroll to the beginning of the list, not the bottom
+      listAnchor.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    async function cmdHistorico(args) {
+      const now = new Date().toISOString().slice(0, 10);
+      let results = HACKATHONS.filter(h => {
+        const endDate = h.date_end || h.date_start;
+        return endDate && endDate < now;
+      });
+
+      const pais = extractFlag(args, "--pais");
+      const ciudad = extractFlag(args, "--ciudad");
+      if (pais) results = results.filter(h => (h.country || "").toLowerCase().includes(pais.toLowerCase()));
+      if (ciudad) results = results.filter(h => (h.city || "").toLowerCase().includes(ciudad.toLowerCase()));
+
+      // Sort most recent first
+      results.sort((a, b) => {
+        const da = a.date_start || "0000";
+        const db = b.date_start || "0000";
+        return db.localeCompare(da);
+      });
+
+      if (results.length === 0) {
+        await typePrint("no hay hackathones pasadas registradas.", "muted", 12);
+        return;
+      }
+
+      const listAnchor = document.createElement("div");
+      output.appendChild(listAnchor);
+
+      await typePrint(
+        results.length + " hackathon" + (results.length !== 1 ? "es" : "") +
+        " pasada" + (results.length !== 1 ? "s" : ""),
+        "muted", 20
+      );
+      br();
+
+      suppressAutoScroll = true;
+      for (let i = 0; i < results.length; i++) {
+        printEvent(results[i]);
+        const lastChild = output.lastElementChild;
+        if (lastChild) {
+          lastChild.style.opacity = "0";
+          lastChild.style.transition = "opacity 0.25s ease-in";
+        }
+        await new Promise(r => setTimeout(r, 60));
+        if (lastChild) lastChild.style.opacity = "1";
+      }
+      suppressAutoScroll = false;
       listAnchor.scrollIntoView({ behavior: "smooth", block: "start" });
     }
 
@@ -922,7 +985,11 @@ const sorted = filtered.sort((a, b) => {
       let scrollHandled = false;
       switch (cmd) {
         case "help": await cmdHelp(); break;
-        case "list": case "ls": await cmdList(args); scrollHandled = true; break;
+        case "list": case "ls":
+          if (args.includes("--legacy")) { await cmdHistorico(args.filter(a => a !== "--legacy")); }
+          else { await cmdList(args); }
+          scrollHandled = true;
+          break;
         case "submit": await startSubmit(); break;
         case "clear": case "cls": cmdClear(); break;
         case "about": await cmdAbout(); break;
@@ -936,7 +1003,7 @@ const sorted = filtered.sort((a, b) => {
 
     // --- Autocomplete ---
     const COMMANDS = ["help", "list", "submit", "clear", "about"];
-    const FLAGS = ["--pais", "--ciudad", "--tipo", "--tag"];
+    const FLAGS = ["--pais", "--ciudad", "--tipo", "--tag", "--legacy"];
     let suggestion = "";
 
     function getSuggestion(input) {
@@ -1013,14 +1080,34 @@ const sorted = filtered.sort((a, b) => {
     });
 
     document.addEventListener("click", (e) => {
-      const btn = e.target.closest(".cal-btn");
-      if (btn) {
+      const calBtn = e.target.closest(".cal-btn");
+      if (calBtn) {
         e.stopPropagation();
-        const h = _icsMap[btn.dataset.ics];
+        const h = _icsMap[calBtn.dataset.ics];
         if (h) openGoogleCalendar(h);
         return;
       }
+      const shareBtn = e.target.closest(".share-btn");
+      if (shareBtn) {
+        e.stopPropagation();
+        const url = window.location.origin + window.location.pathname + "?h=" + encodeURIComponent(shareBtn.dataset.id);
+        navigator.clipboard.writeText(url).then(() => {
+          shareBtn.textContent = "[copiado!]";
+          setTimeout(() => { shareBtn.textContent = "[compartir]"; }, 1500);
+        });
+        return;
+      }
+      if (window.getSelection().toString()) return;
+      if (e.target.closest("a, button, .quick-cmds")) return;
       if (!isTyping) cmdInput.focus();
+    });
+
+    // --- Quick command buttons (mobile) ---
+    document.getElementById("quick-cmds").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-cmd]");
+      if (btn && !isTyping) {
+        handleCommand(btn.dataset.cmd);
+      }
     });
 
     // --- Animated placeholder ---
@@ -1065,5 +1152,19 @@ const sorted = filtered.sort((a, b) => {
 
     cmdInput.addEventListener("input", stopPlaceholder, { once: true });
     cyclePlaceholder();
+
+    // --- Deep link: show specific hackathon from ?h=<id> ---
+    const _urlParams = new URLSearchParams(window.location.search);
+    const _linkedId = _urlParams.get("h");
+    if (_linkedId) {
+      const _target = HACKATHONS.find(h => h.id === _linkedId);
+      if (_target) {
+        stopPlaceholder();
+        lockInput();
+        markHasOutput();
+        printEvent(_target);
+        unlockInput(true);
+      }
+    }
   </script>
 </BaseLayout>

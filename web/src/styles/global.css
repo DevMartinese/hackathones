@@ -115,6 +115,21 @@ a {
 }
 #output .cal-btn:hover { color: var(--text); }
 
+#output .share-btn {
+  font-family: inherit;
+  font-size: inherit;
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0.5rem 0;
+  margin: -0.5rem 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  transition: color 0.2s ease;
+}
+#output .share-btn:hover { color: var(--text); }
+
 /* Typing cursor for output */
 #output .typing-cursor::after {
   content: "\2588";
@@ -192,6 +207,37 @@ a {
   white-space: nowrap;
   overflow: hidden;
   line-height: 1.4;
+}
+
+/* Quick command buttons (mobile) */
+.quick-cmds {
+  display: none;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.quick-cmds button {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  background: none;
+  border: 1px solid #ddd;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0.4rem 0.8rem;
+  transition: color 0.2s ease, border-color 0.2s ease;
+}
+
+.quick-cmds button:hover,
+.quick-cmds button:active {
+  color: var(--text);
+  border-color: var(--text);
+}
+
+@media (max-width: 600px) {
+  .quick-cmds {
+    display: flex;
+  }
 }
 
 @keyframes fadeIn {
