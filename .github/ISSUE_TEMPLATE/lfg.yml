@@ -1,0 +1,42 @@
+name: Buscar equipo (LFG)
+description: Publica que estas buscando equipo para un hackathon
+title: "[lfg] "
+labels: ["lfg-post"]
+body:
+  - type: input
+    id: handle
+    attributes:
+      label: Tu nombre o alias
+      placeholder: "@mati_dev"
+    validations:
+      required: true
+
+  - type: input
+    id: skills
+    attributes:
+      label: Skills (separados por coma)
+      placeholder: "react, python, ml, design"
+    validations:
+      required: true
+
+  - type: input
+    id: hackathon
+    attributes:
+      label: Hackathon
+      placeholder: "HackITBA 2026"
+    validations:
+      required: true
+
+  - type: input
+    id: contact
+    attributes:
+      label: Contacto (twitter, discord, telegram, email)
+      placeholder: "@mati_tw"
+    validations:
+      required: true
+
+  - type: input
+    id: message
+    attributes:
+      label: Mensaje (opcional)
+      placeholder: "busco equipo, primera vez en un hackathon"
