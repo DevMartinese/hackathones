@@ -5,6 +5,7 @@ on:
     types: [opened, edited, closed, reopened]
   schedule:
     - cron: "0 8 * * 1" # Lunes a las 8 UTC
+    - cron: "0 */6 * * *" # Cada 6 horas (LFG posts)
 
 jobs:
   trigger-deploy:

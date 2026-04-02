@@ -306,6 +306,61 @@ const lumaEvents = skipRemote ? [] : await fetchLumaEvents();
 const doraEvents = skipRemote ? [] : await fetchDoraHacksEvents();
 const ghEvents = skipRemote ? [] : await fetchGitHubIssues();
 
+// --- Fetch LFG posts from GitHub Issues ---
+interface LfgPost {
+  id: string;
+  handle: string;
+  skills: string[];
+  hackathon: string;
+  contact: string;
+  message: string;
+  timestamp: string;
+}
+
+async function fetchLfgPosts(): Promise<LfgPost[]> {
+  const posts: LfgPost[] = [];
+  try {
+    const res = await fetch(
+      "https://api.github.com/repos/ainponce/hackathones/issues?state=open&labels=lfg-post&per_page=100",
+      { headers: { "Accept": "application/vnd.github.v3+json", "User-Agent": "hackathones-build" } }
+    );
+    if (!res.ok) return posts;
+    const issues = await res.json();
+
+    for (const issue of issues) {
+      if (issue.pull_request) continue;
+      if (!issue.title?.toLowerCase().startsWith("[lfg]")) continue;
+      const body: string = issue.body || "";
+
+      const boldField = (label: string): string | null => {
+        const m = body.match(new RegExp(`\\*\\*${label}\\*\\*:\\s*(.+)`, "i"));
+        return m ? m[1].trim() : null;
+      };
+      const formField = (label: string): string | null => {
+        const m = body.match(new RegExp(`###\\s*${label}\\s*\\n+([^#\\n][^\\n]*)`, "i"));
+        return m ? m[1].trim() || null : null;
+      };
+      const field = (boldLabel: string, formLabel?: string): string | null => {
+        return boldField(boldLabel) || formField(formLabel || boldLabel) || null;
+      };
+
+      const handle = field("Handle", "Tu nombre o alias") || issue.title.replace(/^\[lfg\]\s*/i, "").trim();
+      const skillsRaw = field("Skills", "Skills (separados por coma)");
+      const skills = skillsRaw ? skillsRaw.split(/,\s*/).map((s: string) => s.trim()).filter(Boolean) : [];
+      const hackathon = field("Hackathon") || "";
+      const contact = field("Contacto", "Contacto (twitter, discord, telegram, email)") || "";
+      const message = (field("Mensaje", "Mensaje (opcional)") || "").slice(0, 200);
+
+      if (!hackathon) continue;
+
+      posts.push({ id: "lfg-" + issue.number, handle, skills, hackathon, contact, message, timestamp: issue.created_at?.slice(0, 10) || today });
+    }
+  } catch { /* GitHub API unavailable */ }
+  return posts;
+}
+
+const lfgPosts = skipRemote ? [] : await fetchLfgPosts();
+
 // --- Deduplication by name similarity + date proximity ---
 function normalize(s: string): string {
   return s.toLowerCase()
@@ -379,12 +434,14 @@ const sorted = filtered.sort((a, b) => {
       <button data-cmd="list">list</button>
       <button data-cmd="list --legacy">--legacy</button>
       <button data-cmd="submit">submit</button>
+      <button data-cmd="lfg">lfg</button>
       <button data-cmd="clear">clear</button>
       <button data-cmd="help">help</button>
     </div>
   </div>
-  <script is:inline define:vars={{ hackathonsData: sorted }}>
+  <script is:inline define:vars={{ hackathonsData: sorted, lfgData: lfgPosts }}>
     const HACKATHONS = hackathonsData;
+    const LFG_POSTS = lfgData;
     const terminal = document.getElementById("terminal");
     const output = document.getElementById("output");
     const cmdInput = document.getElementById("cmd");
@@ -547,6 +604,9 @@ const sorted = filtered.sort((a, b) => {
         '  list --tag &lt;tag&gt; <span class="muted">— filtrar por tag</span>',
         '  list --legacy <span class="muted">— ver hackathones pasadas</span>',
         '  submit <span class="muted">— enviar un hackathon nuevo</span>',
+        '  lfg <span class="muted">— hackers buscando equipo</span>',
+        '  lfg --hackathon &lt;nombre&gt; <span class="muted">— filtrar por hackathon</span>',
+        '  lfg --post <span class="muted">— publicar busqueda de equipo</span>',
         '  clear <span class="muted">— limpiar la terminal</span>',
         '  about <span class="muted">— sobre este proyecto</span>',
         '  help <span class="muted">— mostrar esta ayuda</span>',
@@ -687,6 +747,239 @@ const sorted = filtered.sort((a, b) => {
     function cmdClear() {
       output.innerHTML = "";
       terminal.classList.remove("has-output");
+    }
+
+    // --- LFG ---
+
+    function printLfgPost(p) {
+      let html = '<div class="event-block">';
+      html += '<div class="bold">&gt; @' + esc(p.handle) + '</div>';
+      if (p.skills.length) html += '<div class="muted">' + p.skills.map(function(s) { return '[' + esc(s) + ']'; }).join(' ') + '</div>';
+      html += '<div class="muted">hackathon: ' + esc(p.hackathon) + '</div>';
+      html += '<div class="muted">contacto: ' + esc(p.contact) + '</div>';
+      if (p.message) html += '<div>"' + esc(p.message) + '"</div>';
+      html += '</div>';
+      print(html);
+    }
+
+    async function cmdLfg(args) {
+      if (args.includes("--post")) {
+        await startLfgPost();
+        return;
+      }
+
+      const hackathonFilter = extractFlag(args, "--hackathon");
+      let results = LFG_POSTS;
+
+      if (hackathonFilter) {
+        results = results.filter(function(p) {
+          return p.hackathon.toLowerCase().includes(hackathonFilter.toLowerCase());
+        });
+      }
+
+      if (results.length === 0) {
+        await typePrint("no hay hackers buscando equipo" + (hackathonFilter ? " para ese hackathon." : "."), "muted", 12);
+        await typePrint('escribe "lfg --post" para publicar tu busqueda.', "muted", 10);
+        return;
+      }
+
+      var listAnchor = document.createElement("div");
+      output.appendChild(listAnchor);
+
+      await typePrint(
+        results.length + " hacker" + (results.length !== 1 ? "s" : "") +
+        " buscando equipo",
+        "muted", 20
+      );
+      br();
+
+      suppressAutoScroll = true;
+      for (var i = 0; i < results.length; i++) {
+        printLfgPost(results[i]);
+        var lastChild = output.lastElementChild;
+        if (lastChild) {
+          lastChild.style.opacity = "0";
+          lastChild.style.transition = "opacity 0.25s ease-in";
+        }
+        await new Promise(function(r) { setTimeout(r, 60); });
+        if (lastChild) lastChild.style.opacity = "1";
+      }
+      suppressAutoScroll = false;
+
+      br();
+      print('<span class="muted">escribe "lfg --post" para publicar tu busqueda.</span>');
+
+      listAnchor.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    // --- LFG post flow (inline multi-step form) ---
+
+    var lfgState = null;
+
+    function showHackathonOptions() {
+      var hackathonNames = HACKATHONS.map(function(h) { return h.name; });
+      // Deduplicate
+      var seen = {};
+      var unique = [];
+      for (var i = 0; i < hackathonNames.length; i++) {
+        if (!seen[hackathonNames[i]]) {
+          seen[hackathonNames[i]] = true;
+          unique.push(hackathonNames[i]);
+        }
+      }
+      print('<span class="muted">hackathones disponibles:</span>');
+      for (var j = 0; j < unique.length; j++) {
+        print('  <span class="bold">' + String(j + 1).padStart(2, ' ') + '</span>  ' + esc(unique[j]));
+      }
+      print('  <span class="bold">' + String(unique.length + 1).padStart(2, ' ') + '</span>  otro (texto libre)');
+      br();
+      lfgState._hackathonList = unique;
+    }
+
+    function validateLfgHandle(v) {
+      if (!v.trim()) return "campo obligatorio.";
+      if (v.trim().length > 60) return "maximo 60 caracteres.";
+      return null;
+    }
+
+    function validateLfgSkills(v) {
+      if (!v.trim()) return "campo obligatorio.";
+      if (v.trim().length > 200) return "maximo 200 caracteres.";
+      return null;
+    }
+
+    function validateLfgHackathon(v) {
+      if (!v.trim()) return "campo obligatorio.";
+      var list = lfgState._hackathonList || [];
+      var num = parseInt(v.trim());
+      if (num === list.length + 1) {
+        // "otro" selected — next step will ask for free text
+        return null;
+      }
+      if (!isNaN(num) && (num < 1 || num > list.length + 1)) {
+        return "opcion invalida. escribe un numero entre 1 y " + (list.length + 1) + ".";
+      }
+      // Allow free text directly too
+      return null;
+    }
+
+    function validateLfgContact(v) {
+      if (!v.trim()) return "campo obligatorio.";
+      if (v.trim().length > 120) return "maximo 120 caracteres.";
+      return null;
+    }
+
+    var LFG_STEPS = [
+      { key: "handle", prompt: "tu nombre o alias: ", validate: validateLfgHandle },
+      { key: "skills", prompt: "skills (separados por coma): ", validate: validateLfgSkills },
+      { key: "hackathon", prompt: "hackathon (numero o nombre): ", validate: validateLfgHackathon, beforePrompt: showHackathonOptions },
+      { key: "contact", prompt: "contacto (twitter, discord, email): ", validate: validateLfgContact },
+      { key: "message", prompt: "mensaje (enter para omitir): ", validate: null },
+    ];
+
+    async function startLfgPost() {
+      lfgState = { step: 0, data: {}, _hackathonList: [] };
+      await typePrint("publicar busqueda de equipo. escribe 'cancel' o Ctrl+C para cancelar.", "muted", 8);
+      await typePrint("tu contacto sera publico.", "muted", 8);
+      br();
+      var step = LFG_STEPS[0];
+      if (step.beforePrompt) step.beforePrompt();
+      setLfgPrompt();
+    }
+
+    function setLfgPrompt() {
+      var step = LFG_STEPS[lfgState.step];
+      var promptEl = inputLine.querySelector(".prompt");
+      promptEl.innerHTML = '<span class="step-prompt">' + step.prompt + '</span>';
+    }
+
+    async function handleLfgStep(value) {
+      var step = LFG_STEPS[lfgState.step];
+
+      if (value.toLowerCase() === "cancel") {
+        printRaw(step.prompt + value);
+        await typePrint("busqueda cancelada.", "muted", 15);
+        lfgState = null;
+        resetPrompt();
+        return;
+      }
+
+      if (step.validate) {
+        var error = step.validate(value);
+        if (error) {
+          await typePrint(error, "muted", 12);
+          return;
+        }
+      }
+
+      printRaw(step.prompt + value);
+
+      var finalValue = value.trim();
+
+      // Resolve hackathon selection
+      if (step.key === "hackathon" && finalValue) {
+        var list = lfgState._hackathonList || [];
+        var num = parseInt(finalValue);
+        if (!isNaN(num) && num >= 1 && num <= list.length) {
+          finalValue = list[num - 1];
+        } else if (!isNaN(num) && num === list.length + 1) {
+          // "otro" — need to ask for free text
+          lfgState.data[step.key] = "__otro";
+          lfgState.step++;
+          // Insert a temporary step for free text hackathon name
+          var promptEl = inputLine.querySelector(".prompt");
+          promptEl.innerHTML = '<span class="step-prompt">nombre del hackathon: </span>';
+          lfgState._awaitingCustomHackathon = true;
+          return;
+        }
+      }
+
+      lfgState.data[step.key] = finalValue;
+      lfgState.step++;
+
+      if (lfgState.step >= LFG_STEPS.length) {
+        await finishLfgPost();
+        return;
+      }
+
+      var nextStep = LFG_STEPS[lfgState.step];
+      if (nextStep.beforePrompt) nextStep.beforePrompt();
+      setLfgPrompt();
+    }
+
+    async function finishLfgPost() {
+      var d = lfgState.data;
+      var handle = (d.handle || "").replace(/^@/, "");
+      br();
+      await typePrint("resumen:", "bold", 15);
+      printRaw("  handle: @" + handle);
+      printRaw("  skills: " + d.skills);
+      printRaw("  hackathon: " + d.hackathon);
+      printRaw("  contacto: " + d.contact);
+      if (d.message) printRaw("  mensaje: " + d.message);
+      br();
+
+      var body = [
+        "## @" + handle, "",
+        "- **Handle**: " + handle,
+        "- **Skills**: " + d.skills,
+        "- **Hackathon**: " + d.hackathon,
+        "- **Contacto**: " + d.contact,
+        d.message ? "- **Mensaje**: " + d.message : "",
+      ].filter(Boolean).join("\n");
+
+      var issueUrl = "https://github.com/ainponce/hackathones/issues/new?title=" +
+        encodeURIComponent("[lfg] @" + handle) +
+        "&body=" + encodeURIComponent(body) +
+        "&labels=lfg-post";
+
+      await typePrint('abriendo issue en github... <a class="link" href="' + esc(issueUrl) + '" target="_blank" rel="noopener">abrir manualmente</a>', null, 10);
+      window.open(issueUrl, "_blank");
+      br();
+      await typePrint("post creado. aparecera en el board pronto.", "muted", 15);
+
+      lfgState = null;
+      resetPrompt();
     }
 
     // --- Validators ---
@@ -968,6 +1261,31 @@ const sorted = filtered.sort((a, b) => {
         return;
       }
 
+      if (lfgState !== null) {
+        lockInput();
+        if (lfgState._awaitingCustomHackathon) {
+          if (!trimmed) {
+            await typePrint("campo obligatorio.", "muted", 12);
+          } else {
+            printRaw("nombre del hackathon: " + trimmed);
+            lfgState.data.hackathon = trimmed;
+            lfgState._awaitingCustomHackathon = false;
+            lfgState.step++;  // move past hackathon step
+            if (lfgState.step >= LFG_STEPS.length) {
+              await finishLfgPost();
+            } else {
+              var nextStep = LFG_STEPS[lfgState.step];
+              if (nextStep.beforePrompt) nextStep.beforePrompt();
+              setLfgPrompt();
+            }
+          }
+        } else {
+          await handleLfgStep(trimmed);
+        }
+        unlockInput();
+        return;
+      }
+
       if (!trimmed) return;
 
       printRaw("$ " + trimmed, "bold");
@@ -991,6 +1309,7 @@ const sorted = filtered.sort((a, b) => {
           scrollHandled = true;
           break;
         case "submit": await startSubmit(); break;
+        case "lfg": await cmdLfg(args); scrollHandled = true; break;
         case "clear": case "cls": cmdClear(); break;
         case "about": await cmdAbout(); break;
         default:
@@ -1002,12 +1321,12 @@ const sorted = filtered.sort((a, b) => {
     }
 
     // --- Autocomplete ---
-    const COMMANDS = ["help", "list", "submit", "clear", "about"];
-    const FLAGS = ["--pais", "--ciudad", "--tipo", "--tag", "--legacy"];
+    const COMMANDS = ["help", "list", "submit", "lfg", "clear", "about"];
+    const FLAGS = ["--pais", "--ciudad", "--tipo", "--tag", "--legacy", "--hackathon", "--post"];
     let suggestion = "";
 
     function getSuggestion(input) {
-      if (!input || submitState !== null) return "";
+      if (!input || submitState !== null || lfgState !== null) return "";
       const parts = input.split(/\s+/);
       const last = parts[parts.length - 1].toLowerCase();
       if (!last) return "";
@@ -1015,7 +1334,8 @@ const sorted = filtered.sort((a, b) => {
         const match = COMMANDS.find(c => c.startsWith(last) && c !== last);
         return match ? match.slice(last.length) : "";
       }
-      if (parts[0].toLowerCase() === "list" && last.startsWith("-")) {
+      const cmd0 = parts[0].toLowerCase();
+      if ((cmd0 === "list" || cmd0 === "lfg") && last.startsWith("-")) {
         const match = FLAGS.find(f => f.startsWith(last) && f !== last);
         return match ? match.slice(last.length) : "";
       }
@@ -1049,6 +1369,13 @@ const sorted = filtered.sort((a, b) => {
           printRaw("^C");
           typePrint("envio cancelado.", "muted", 15);
           submitState = null;
+          resetPrompt();
+          cmdInput.value = "";
+          unlockInput();
+        } else if (lfgState !== null) {
+          printRaw("^C");
+          typePrint("busqueda cancelada.", "muted", 15);
+          lfgState = null;
           resetPrompt();
           cmdInput.value = "";
           unlockInput();
@@ -1099,7 +1426,7 @@ const sorted = filtered.sort((a, b) => {
       }
       if (window.getSelection().toString()) return;
       if (e.target.closest("a, button, .quick-cmds")) return;
-      if (!isTyping) cmdInput.focus();
+      if (!isTyping) cmdInput.focus({ preventScroll: true });
     });
 
     // --- Quick command buttons (mobile) ---
@@ -1115,6 +1442,7 @@ const sorted = filtered.sort((a, b) => {
     const PH_HINTS = [
       'escribe help para ver comandos',
       'escribe list para ver hackathones',
+      'escribe lfg para buscar equipo',
       'escribe submit para enviar uno',
     ];
     let phIndex = 0;
