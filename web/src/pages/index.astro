@@ -321,7 +321,7 @@ async function fetchLfgPosts(): Promise<LfgPost[]> {
   const posts: LfgPost[] = [];
   try {
     const res = await fetch(
-      "https://api.github.com/repos/ainponce/hackathones/issues?state=open&labels=lfg-post&per_page=100",
+      "https://api.github.com/repos/ainponce/hackathones/issues?state=open&per_page=100",
       { headers: { "Accept": "application/vnd.github.v3+json", "User-Agent": "hackathones-build" } }
     );
     if (!res.ok) return posts;
