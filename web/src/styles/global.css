@@ -334,6 +334,9 @@ html.intro-pending #terminal {
     top 0.9s cubic-bezier(0.7, 0, 0.2, 1),
     transform 0.9s cubic-bezier(0.7, 0, 0.2, 1);
   will-change: left, top, transform;
+  /* Shader is purely visual — never let its canvas eat tap events meant
+     for the bar/button positioned below it. */
+  pointer-events: none;
 }
 
 .intro-loader.intro-shrinking .intro-stage {
@@ -365,6 +368,9 @@ html.intro-pending #terminal {
   font-family: var(--font-mono);
   color: var(--text);
   transition: opacity 0.4s ease;
+  /* Sit above .intro-stage in the stacking order so the button is
+     reachable even when the shader's bounding box overlaps the bar. */
+  z-index: 1;
 }
 
 .intro-loader.intro-shrinking .intro-bar,
@@ -403,10 +409,11 @@ html.intro-pending #terminal {
   color: var(--text);
   font-family: var(--font-mono);
   font-size: var(--font-size-base);
-  padding: 0.6rem 1.1rem;
+  padding: 0.9rem 1.4rem;
   margin: 0;
   cursor: pointer;
   pointer-events: auto;
+  touch-action: manipulation;
   transition: background-color 0.15s ease, color 0.15s ease;
   -webkit-tap-highlight-color: transparent;
 }
