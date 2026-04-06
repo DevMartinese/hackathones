@@ -24,6 +24,8 @@
 
 html, body {
   height: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
   font-size: var(--font-size-base);
 }
 
@@ -50,9 +52,23 @@ a {
   margin: 0 auto;
   padding: var(--terminal-padding);
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
   justify-content: center;
+}
+
+/* Reserve top space for the corner shader logo and respect the iOS notch /
+   dynamic island / Android gesture bars on screens where the terminal width
+   approaches the viewport width. Desktop is unaffected because the terminal
+   is centered with plenty of horizontal margin around the corner shader. */
+@media (max-width: 900px) {
+  #terminal {
+    padding-top: calc(env(safe-area-inset-top, 0px) + 6rem);
+    padding-left: max(env(safe-area-inset-left, 0px), var(--terminal-padding));
+    padding-right: max(env(safe-area-inset-right, 0px), var(--terminal-padding));
+    padding-bottom: max(env(safe-area-inset-bottom, 0px), var(--terminal-padding));
+  }
 }
 
 #terminal.has-output {
@@ -237,6 +253,9 @@ a {
 @media (max-width: 600px) {
   .quick-cmds {
     display: flex;
+    /* Push the quick-cmds bar above the iOS home indicator / Android gesture
+       bar so the buttons aren't sitting under system UI. */
+    padding-bottom: env(safe-area-inset-bottom, 0px);
   }
 }
 
@@ -301,7 +320,18 @@ html.intro-pending #terminal {
   z-index: 9999;
   background: var(--bg);
   pointer-events: none;
-  transition: background-color 0.6s ease 0.2s;
+  transition:
+    background-color 0.6s ease 0.2s,
+    opacity 0.45s ease;
+}
+
+/* On mobile / tablet, once the user has actually run a command (terminal
+   gained .has-output), the corner shader becomes noise — fade it out so
+   the content has the full screen. Desktop keeps the corner logo. */
+@media (max-width: 900px) {
+  body:has(#terminal.has-output) .intro-loader.intro-settled {
+    opacity: 0;
+  }
 }
 
 /* During the "ready" phase the overlay must capture the tap/click that
@@ -346,10 +376,11 @@ html.intro-pending #terminal {
 }
 
 /* Settled: swap from transform-scaled to native-size canvas so the shader
-   renders crisply at the final pixel dimensions. Same visual size, no jump. */
+   renders crisply at the final pixel dimensions. Same visual size, no jump.
+   Position respects the iOS dynamic island / notch via safe-area insets. */
 .intro-loader.intro-settled .intro-stage {
-  left: var(--intro-margin);
-  top: var(--intro-margin);
+  left: max(env(safe-area-inset-left, 0px) + 0.25rem, var(--intro-margin));
+  top: max(env(safe-area-inset-top, 0px) + 0.25rem, var(--intro-margin));
   width: var(--intro-target);
   height: var(--intro-target);
   transform: none;
@@ -440,7 +471,7 @@ html.intro-pending #terminal {
 @media (max-width: 480px) {
   .intro-stage {
     --intro-size: min(80vmin, 360px);
-    --intro-target: 88px;
+    --intro-target: 80px;
     --intro-margin: 0.75rem;
   }
   .intro-bar {

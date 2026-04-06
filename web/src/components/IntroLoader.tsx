@@ -214,18 +214,32 @@ export default function IntroLoader() {
     }
   }, [phase]);
 
-  // begin() is shared between the document gesture listeners (desktop fast
-  // path: keydown/click) and the explicit button (mobile reliable path).
-  // Idempotent via triggeredRef so duplicate fires are safe.
+  // begin() is shared between every possible "user gesture" entry point:
+  // document keydown/pointerdown/touchstart, the overlay onClick/onTouchStart,
+  // and the explicit button onClick. iOS Safari is picky about which event
+  // counts as a gesture, so we wire it everywhere and rely on triggeredRef
+  // to make duplicate fires harmless.
   const triggeredRef = useRef(false);
-  const begin = useCallback(async () => {
+  const begin = useCallback(() => {
     if (triggeredRef.current) return;
     triggeredRef.current = true;
+
+    // Resume the audio context SYNCHRONOUSLY inside the gesture handler.
+    // Don't await — that would yield to the event loop and Safari would
+    // no longer treat us as a "user activation". Tone.start() returns a
+    // promise but the underlying rawContext.resume() call still kicks
+    // off the unlock immediately.
     if (audio) {
       try {
-        await audio.Tone.start();
+        audio.Tone.start();
+        const ctx = audio.Tone.getContext();
+        const raw = ctx?.rawContext as AudioContext | undefined;
+        if (raw && raw.state !== "running" && typeof raw.resume === "function") {
+          void raw.resume();
+        }
       } catch {}
     }
+
     setPhase("loading");
   }, [audio]);
 
@@ -373,8 +387,24 @@ export default function IntroLoader() {
     pctLabel = `${String(pct).padStart(3, " ")}%`;
   }
 
+  // During the "ready" phase, the entire overlay is a tap target so the
+  // user doesn't have to hit the small button precisely. Wired with both
+  // onClick (desktop + most mobile) and onTouchStart (iOS Safari fallback
+  // — fires earlier and more reliably than synthetic click).
+  const overlayHandlers =
+    phase === "ready"
+      ? {
+          onClick: begin,
+          onTouchStart: begin,
+        }
+      : {};
+
   return (
-    <div className={`intro-loader intro-${phase}`} aria-hidden="true">
+    <div
+      className={`intro-loader intro-${phase}`}
+      aria-hidden="true"
+      {...overlayHandlers}
+    >
       <div className="intro-stage">
         <Suspense fallback={null}>
           <IntroSparkle
@@ -393,7 +423,14 @@ export default function IntroLoader() {
             <button
               type="button"
               className="intro-bar-button"
-              onClick={begin}
+              onClick={(e) => {
+                e.stopPropagation();
+                begin();
+              }}
+              onTouchStart={(e) => {
+                e.stopPropagation();
+                begin();
+              }}
             >
               [ tap to begin ]
             </button>
