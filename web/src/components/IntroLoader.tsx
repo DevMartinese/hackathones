@@ -279,7 +279,11 @@ export default function IntroLoader() {
     const start = performance.now();
     let raf = 0;
     const tick = (now: number) => {
-      const p = Math.min((now - start) / LOADING_MS, 1);
+      // Clamp on BOTH sides — some engines (notably WebKit) can hand back
+      // an `now` timestamp slightly earlier than the `performance.now()` we
+      // captured a microtask ago, which would yield a negative ratio and
+      // crash the bar render via `String.repeat(-1)`.
+      const p = Math.max(0, Math.min((now - start) / LOADING_MS, 1));
       setProgress(p);
       if (p < 1) raf = requestAnimationFrame(tick);
     };
@@ -367,12 +371,20 @@ export default function IntroLoader() {
 
   if (!mounted) return null;
 
-  const filled = Math.floor(progress * BAR_WIDTH);
+  // Clamp defensively — if `progress` ever escapes [0, 1] (Safari RAF
+  // timestamp quirks, NaN from a stale closure, etc.) we'd otherwise feed
+  // a negative count to String.repeat() and crash the entire component.
+  const safeProgress = Math.max(0, Math.min(progress, 1));
+  const filled = Math.max(
+    0,
+    Math.min(BAR_WIDTH, Math.floor(safeProgress * BAR_WIDTH))
+  );
+  const remaining = Math.max(0, BAR_WIDTH - filled);
   const bar =
     phase === "loading" || phase === "shrinking" || phase === "settled"
-      ? "\u2588".repeat(filled) + "\u2591".repeat(BAR_WIDTH - filled)
+      ? "\u2588".repeat(filled) + "\u2591".repeat(remaining)
       : "\u2591".repeat(BAR_WIDTH);
-  const pct = Math.floor(progress * 100);
+  const pct = Math.floor(safeProgress * 100);
 
   let label: string;
   let pctLabel: string;
