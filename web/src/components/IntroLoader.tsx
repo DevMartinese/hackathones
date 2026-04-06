@@ -255,23 +255,32 @@ export default function IntroLoader() {
   // counts as a gesture, so we wire it everywhere and rely on triggeredRef
   // to make duplicate fires harmless.
   //
-  // CRITICAL: this function is async with a single await on Tone.start().
-  // iOS Safari preserves user activation across one short await but not
-  // across multiple awaits or arbitrary work — so we resume the context
-  // (the only call that requires activation), and then the moment the
-  // promise resolves we synchronously start every oscillator and schedule
-  // every event in one go. Calling kickoffAudio() from the loading effect
-  // wouldn't reliably see a running context because of the React render
-  // cycle in between, which is why this had been silent on real iOS.
+  // CRITICAL: this function MUST be synchronous. A previous version used
+  // `await audio.Tone.start()` before calling setPhase, but on real iOS
+  // Safari that await could hang indefinitely (or lose user activation),
+  // which left setPhase("loading") never running and the user staring at
+  // a frozen screen after tapping. Now:
+  //   - Tone.start() is fired inside the gesture (so resume() gets the
+  //     activation it needs) but we do NOT await it
+  //   - kickoffAudio runs in a .then() callback once the resume promise
+  //     resolves (the context is already running by then, so starting
+  //     oscillators doesn't require user activation)
+  //   - setPhase("loading") fires synchronously regardless, so the bar
+  //     and visual sequence ALWAYS start the moment the user taps,
+  //     independent of audio outcome
   const triggeredRef = useRef(false);
-  const begin = useCallback(async () => {
+  const begin = useCallback(() => {
     if (triggeredRef.current) return;
     triggeredRef.current = true;
 
     if (audio && !audioStartedRef.current) {
       try {
-        await audio.Tone.start();
-        kickoffAudio(audio);
+        // Fire-and-forget: resume() is invoked in-gesture so iOS allows
+        // it; kickoffAudio runs once the promise resolves and the context
+        // is actually running.
+        audio.Tone.start()
+          .then(() => kickoffAudio(audio))
+          .catch(() => {});
       } catch {}
     }
 
