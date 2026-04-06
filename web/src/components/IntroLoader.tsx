@@ -214,29 +214,64 @@ export default function IntroLoader() {
     }
   }, [phase]);
 
+  // Kick off the entire Hans Zimmer sequence on a running audio context.
+  // Idempotent via audioStartedRef. Pulled out so it can run from either
+  // begin() (the normal path, inside the user gesture) or the loading
+  // effect (fallback if audio finished loading after the user already
+  // tapped through).
+  const kickoffAudio = (a: AudioGraph) => {
+    if (audioStartedRef.current) return;
+    const Tone = a.Tone;
+    if (Tone.getContext().state !== "running") return;
+    audioStartedRef.current = true;
+
+    const now = Tone.now();
+    const loadingSec = LOADING_MS / 1000;
+
+    a.sub.start(now);
+    a.subLow.start(now);
+    a.pad1.start(now);
+    a.pad2.start(now);
+    a.pad3.start(now);
+    a.pad4.start(now);
+
+    a.master.gain.setValueAtTime(0, now);
+    a.master.gain.linearRampToValueAtTime(0.9, now + 1.2);
+
+    a.padFilter.frequency.setValueAtTime(280, now);
+    a.padFilter.frequency.exponentialRampToValueAtTime(
+      2800,
+      now + loadingSec
+    );
+
+    a.braaam.triggerAttackRelease("A1", "2n", now);
+    a.braaam.triggerAttackRelease("E2", "4n", now + loadingSec * 0.6);
+    a.braaam.triggerAttackRelease("A2", "2n", now + loadingSec - 0.4);
+  };
+
   // begin() is shared between every possible "user gesture" entry point:
   // document keydown/pointerdown/touchstart, the overlay onClick/onTouchStart,
   // and the explicit button onClick. iOS Safari is picky about which event
   // counts as a gesture, so we wire it everywhere and rely on triggeredRef
   // to make duplicate fires harmless.
+  //
+  // CRITICAL: this function is async with a single await on Tone.start().
+  // iOS Safari preserves user activation across one short await but not
+  // across multiple awaits or arbitrary work — so we resume the context
+  // (the only call that requires activation), and then the moment the
+  // promise resolves we synchronously start every oscillator and schedule
+  // every event in one go. Calling kickoffAudio() from the loading effect
+  // wouldn't reliably see a running context because of the React render
+  // cycle in between, which is why this had been silent on real iOS.
   const triggeredRef = useRef(false);
-  const begin = useCallback(() => {
+  const begin = useCallback(async () => {
     if (triggeredRef.current) return;
     triggeredRef.current = true;
 
-    // Resume the audio context SYNCHRONOUSLY inside the gesture handler.
-    // Don't await — that would yield to the event loop and Safari would
-    // no longer treat us as a "user activation". Tone.start() returns a
-    // promise but the underlying rawContext.resume() call still kicks
-    // off the unlock immediately.
-    if (audio) {
+    if (audio && !audioStartedRef.current) {
       try {
-        audio.Tone.start();
-        const ctx = audio.Tone.getContext();
-        const raw = ctx?.rawContext as AudioContext | undefined;
-        if (raw && raw.state !== "running" && typeof raw.resume === "function") {
-          void raw.resume();
-        }
+        await audio.Tone.start();
+        kickoffAudio(audio);
       } catch {}
     }
 
@@ -272,7 +307,11 @@ export default function IntroLoader() {
     return () => window.clearTimeout(t);
   }, [phase]);
 
-  // In "loading": drive the bar, drive the audio, schedule shrink/settle.
+  // In "loading": drive the bar and schedule the shrink. Audio is started
+  // synchronously inside begin() now (see kickoffAudio above) — but if the
+  // user happened to tap before Tone.js finished loading, audio === null at
+  // that moment and we missed the boat. The effect's `audio` dep makes it
+  // re-run when the audio graph eventually arrives, and we kickoff then.
   useEffect(() => {
     if (phase !== "loading") return;
 
@@ -289,74 +328,43 @@ export default function IntroLoader() {
     };
     raf = requestAnimationFrame(tick);
 
-    // Kick off the Hans Zimmer sequence.
+    // Late-arrival fallback: audio loaded after the gesture happened.
     if (audio && !audioStartedRef.current) {
-      audioStartedRef.current = true;
-      const ctxReady = audio.Tone.getContext().state === "running";
-      if (ctxReady) {
-        const now = audio.Tone.now();
-        const loadingSec = LOADING_MS / 1000;
-
-        // Start all sustained oscillators.
-        audio.sub.start(now);
-        audio.subLow.start(now);
-        audio.pad1.start(now);
-        audio.pad2.start(now);
-        audio.pad3.start(now);
-        audio.pad4.start(now);
-
-        // Master swell: fade in over 1.2s.
-        audio.master.gain.setValueAtTime(0, now);
-        audio.master.gain.linearRampToValueAtTime(0.9, now + 1.2);
-
-        // Filter opens over the full duration for tension.
-        audio.padFilter.frequency.setValueAtTime(280, now);
-        audio.padFilter.frequency.exponentialRampToValueAtTime(
-          2800,
-          now + loadingSec
-        );
-
-        // Opening BRAAAM on A1.
-        audio.braaam.triggerAttackRelease("A1", "2n", now);
-
-        // Mid tension hit on E2 around 60% in.
-        audio.braaam.triggerAttackRelease(
-          "E2",
-          "4n",
-          now + loadingSec * 0.6
-        );
-
-        // Climax hit on A2 just before the shrink.
-        audio.braaam.triggerAttackRelease(
-          "A2",
-          "2n",
-          now + loadingSec - 0.4
-        );
-      }
+      kickoffAudio(audio);
     }
 
+    // Schedule shrink only — the settled transition is owned by the
+    // shrinking effect below. (Scheduling both here is wrong: when
+    // setPhase("shrinking") fires, this effect's cleanup runs and would
+    // clearTimeout the settled timer before it gets a chance to fire,
+    // leaving the loader stuck in `shrinking` forever.)
     const t1 = window.setTimeout(() => setPhase("shrinking"), LOADING_MS);
-    const t2 = window.setTimeout(
-      () => setPhase("settled"),
-      LOADING_MS + SHRINK_MS
-    );
 
     return () => {
       cancelAnimationFrame(raf);
       window.clearTimeout(t1);
-      window.clearTimeout(t2);
     };
   }, [phase, audio]);
 
-  // Fade audio out during the shrink.
+  // During shrink: fade audio (if any), then promote to settled.
+  // The settled transition MUST live here, not in the loading effect, so
+  // its timer survives the loading→shrinking phase change.
   useEffect(() => {
     if (phase !== "shrinking") return;
-    if (!audio || !audioStartedRef.current) return;
-    const now = audio.Tone.now();
-    audio.master.gain.cancelScheduledValues(now);
-    audio.master.gain.setValueAtTime(audio.master.gain.value, now);
-    audio.master.gain.linearRampToValueAtTime(0, now + SHRINK_MS / 1000);
+
+    if (audio && audioStartedRef.current) {
+      const now = audio.Tone.now();
+      audio.master.gain.cancelScheduledValues(now);
+      audio.master.gain.setValueAtTime(audio.master.gain.value, now);
+      audio.master.gain.linearRampToValueAtTime(0, now + SHRINK_MS / 1000);
+    }
+
+    const settleTimer = window.setTimeout(
+      () => setPhase("settled"),
+      SHRINK_MS
+    );
     const stopTimer = window.setTimeout(() => {
+      if (!audio) return;
       try {
         audio.sub.stop();
         audio.subLow.stop();
@@ -366,7 +374,11 @@ export default function IntroLoader() {
         audio.pad4.stop();
       } catch {}
     }, SHRINK_MS + 500);
-    return () => window.clearTimeout(stopTimer);
+
+    return () => {
+      window.clearTimeout(settleTimer);
+      window.clearTimeout(stopTimer);
+    };
   }, [phase, audio]);
 
   if (!mounted) return null;

@@ -327,8 +327,11 @@ html.intro-pending #terminal {
 
 /* On mobile / tablet, once the user has actually run a command (terminal
    gained .has-output), the corner shader becomes noise — fade it out so
-   the content has the full screen. Desktop keeps the corner logo. */
+   the content has the full screen. Desktop keeps the corner logo.
+   Matches both shrinking and settled to be resilient to any transition
+   timing edge case. */
 @media (max-width: 900px) {
+  body:has(#terminal.has-output) .intro-loader.intro-shrinking,
   body:has(#terminal.has-output) .intro-loader.intro-settled {
     opacity: 0;
   }
