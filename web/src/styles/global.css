@@ -393,6 +393,38 @@ html.intro-pending #terminal {
   color: var(--muted);
 }
 
+/* Mobile-only explicit tap target. Document-level gesture listeners are
+   unreliable on iOS Safari, so on touch devices we render an actual button
+   that captures the tap directly and unlocks the audio context. */
+.intro-bar-button {
+  display: none;
+  background: transparent;
+  border: 1px solid var(--text);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-base);
+  padding: 0.6rem 1.1rem;
+  margin: 0;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.intro-bar-button:active {
+  background: var(--text);
+  color: var(--bg);
+}
+
+@media (pointer: coarse) {
+  .intro-bar-label-touchless {
+    display: none;
+  }
+  .intro-bar-button {
+    display: inline-block;
+  }
+}
+
 @keyframes introPulse {
   0%, 100% { opacity: 0.55; }
   50% { opacity: 1; }

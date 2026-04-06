@@ -214,26 +214,25 @@ export default function IntroLoader() {
     }
   }, [phase]);
 
+  // begin() is shared between the document gesture listeners (desktop fast
+  // path: keydown/click) and the explicit button (mobile reliable path).
+  // Idempotent via triggeredRef so duplicate fires are safe.
+  const triggeredRef = useRef(false);
+  const begin = useCallback(async () => {
+    if (triggeredRef.current) return;
+    triggeredRef.current = true;
+    if (audio) {
+      try {
+        await audio.Tone.start();
+      } catch {}
+    }
+    setPhase("loading");
+  }, [audio]);
+
   // In "ready": wait for any gesture, then unlock audio and move to loading.
   useEffect(() => {
     if (phase !== "ready") return;
-
-    let triggered = false;
-    const begin = async () => {
-      if (triggered) return;
-      triggered = true;
-      document.removeEventListener("pointerdown", begin);
-      document.removeEventListener("keydown", begin);
-      document.removeEventListener("touchstart", begin);
-
-      // Unlock audio context using the fresh gesture.
-      if (audio) {
-        try {
-          await audio.Tone.start();
-        } catch {}
-      }
-      setPhase("loading");
-    };
+    triggeredRef.current = false;
 
     document.addEventListener("pointerdown", begin);
     document.addEventListener("keydown", begin);
@@ -244,7 +243,20 @@ export default function IntroLoader() {
       document.removeEventListener("keydown", begin);
       document.removeEventListener("touchstart", begin);
     };
-  }, [phase, audio]);
+  }, [phase, begin]);
+
+  // Hand focus to the terminal textarea once the loader has fully settled
+  // — otherwise the user has to click into it manually before typing.
+  useEffect(() => {
+    if (phase !== "settled") return;
+    const t = window.setTimeout(() => {
+      const cmd = document.getElementById("cmd") as HTMLTextAreaElement | null;
+      if (cmd && typeof cmd.focus === "function") {
+        cmd.focus({ preventScroll: true });
+      }
+    }, 80);
+    return () => window.clearTimeout(t);
+  }, [phase]);
 
   // In "loading": drive the bar, drive the audio, schedule shrink/settle.
   useEffect(() => {
@@ -373,7 +385,22 @@ export default function IntroLoader() {
       </div>
       <div className="intro-bar">
         <pre className="intro-bar-line">[{bar}] {pctLabel}</pre>
-        <p className="intro-bar-label">{label}</p>
+        {phase === "ready" ? (
+          <>
+            <p className="intro-bar-label intro-bar-label-touchless">
+              press any key to begin
+            </p>
+            <button
+              type="button"
+              className="intro-bar-button"
+              onClick={begin}
+            >
+              [ tap to begin ]
+            </button>
+          </>
+        ) : (
+          <p className="intro-bar-label">{label}</p>
+        )}
       </div>
     </div>
   );
