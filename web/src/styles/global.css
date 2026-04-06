@@ -288,3 +288,114 @@ a {
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
+/* ---------- Intro loader (home only, once per session) ---------- */
+
+html.intro-pending #terminal {
+  visibility: hidden;
+}
+
+.intro-loader {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: var(--bg);
+  pointer-events: none;
+  transition: background-color 0.6s ease 0.2s;
+}
+
+.intro-loader.intro-shrinking,
+.intro-loader.intro-settled {
+  background: transparent;
+}
+
+.intro-stage {
+  --intro-size: min(70vmin, 480px);
+  --intro-target: 120px;
+  --intro-margin: 1rem;
+  position: fixed;
+  width: var(--intro-size);
+  height: var(--intro-size);
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%) scale(1);
+  transform-origin: top left;
+  transition:
+    left 0.9s cubic-bezier(0.7, 0, 0.2, 1),
+    top 0.9s cubic-bezier(0.7, 0, 0.2, 1),
+    transform 0.9s cubic-bezier(0.7, 0, 0.2, 1);
+  will-change: left, top, transform;
+}
+
+.intro-loader.intro-shrinking .intro-stage {
+  left: var(--intro-margin);
+  top: var(--intro-margin);
+  transform: translate(0, 0) scale(calc(var(--intro-target) / var(--intro-size)));
+}
+
+/* Settled: swap from transform-scaled to native-size canvas so the shader
+   renders crisply at the final pixel dimensions. Same visual size, no jump. */
+.intro-loader.intro-settled .intro-stage {
+  left: var(--intro-margin);
+  top: var(--intro-margin);
+  width: var(--intro-target);
+  height: var(--intro-target);
+  transform: none;
+  transition: none;
+}
+
+.intro-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 16vh;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.55rem;
+  font-family: var(--font-mono);
+  color: var(--text);
+  transition: opacity 0.4s ease;
+}
+
+.intro-loader.intro-shrinking .intro-bar,
+.intro-loader.intro-settled .intro-bar {
+  opacity: 0;
+}
+
+.intro-bar-line {
+  margin: 0;
+  font-size: var(--font-size-base);
+  font-family: var(--font-mono);
+  white-space: pre;
+  letter-spacing: 0;
+}
+
+.intro-loader.intro-preparing .intro-bar-line,
+.intro-loader.intro-preparing .intro-bar-label,
+.intro-loader.intro-ready .intro-bar-line,
+.intro-loader.intro-ready .intro-bar-label {
+  animation: introPulse 1.4s ease-in-out infinite;
+}
+
+.intro-bar-label {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--muted);
+}
+
+@keyframes introPulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+@media (max-width: 480px) {
+  .intro-stage {
+    --intro-size: min(80vmin, 360px);
+    --intro-target: 88px;
+    --intro-margin: 0.75rem;
+  }
+  .intro-bar {
+    bottom: 12vh;
+  }
+}

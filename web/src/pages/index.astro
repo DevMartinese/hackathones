@@ -1,423 +1,17 @@
 ---
 import BaseLayout from "../layouts/BaseLayout.astro";
+import IntroLoader from "../components/IntroLoader.tsx";
 
-// --- Fetch real data from Luma API at build time ---
-const LUMA_SEED_SLUGS = [
-  // Argentina
-  "4uq8yejo", "6kluo21l", "e12138qh", "m1vu0bde", "uds2l1td",
-  // Colombia
-  "hackavax", "fizpni10",
-  // Mexico
-  "3rpalo5b",
-  // LATAM / virtual
-  "do4zysjd", "xrhqzya0", "bp630aaz",
-  // USA
-  "miami-hackathon", "genaihack", "arkusAI", "hackathon-6-25",
-  // Brasil
-  "6s3u6xwc",
-];
-
-const AMERICAS_COUNTRIES = [
-  "argentina", "brasil", "brazil", "chile", "colombia", "mexico", "méxico",
-  "peru", "perú", "uruguay", "paraguay", "ecuador", "bolivia", "venezuela",
-  "costa rica", "panama", "panamá", "guatemala", "honduras", "el salvador",
-  "nicaragua", "cuba", "dominican republic", "república dominicana",
-  "united states", "estados unidos", "usa", "canada", "canadá",
-];
-
-interface HackathonData {
-  id: string;
-  name: string;
-  date_start: string | null;
-  date_end: string | null;
-  country: string | null;
-  city: string | null;
-  location: string | null;
-  url: string | null;
-  source: string;
-  type: string | null;
-  tags: string[];
-  description: string;
-}
-
-function isAmericas(geo: Record<string, string>, eventName: string): boolean {
-  const country = (geo.country || "").toLowerCase();
-  if (AMERICAS_COUNTRIES.some(c => country.includes(c))) return true;
-  const combined = `${eventName} ${geo.city || ""} ${geo.region || ""}`.toLowerCase();
-  const latamKeywords = ["latam", "latinoamerica", "latin america", ...AMERICAS_COUNTRIES];
-  return latamKeywords.some(kw => combined.includes(kw));
-}
-
-function normalizeCountry(geo: Record<string, string>): string | null {
-  const raw = (geo.country || "").toLowerCase();
-  const map: Record<string, string> = {
-    "argentina": "Argentina", "brazil": "Brasil", "brasil": "Brasil",
-    "chile": "Chile", "colombia": "Colombia", "mexico": "Mexico",
-    "méxico": "Mexico", "peru": "Peru", "perú": "Peru",
-    "uruguay": "Uruguay", "paraguay": "Paraguay", "ecuador": "Ecuador",
-    "bolivia": "Bolivia", "venezuela": "Venezuela", "costa rica": "Costa Rica",
-    "panama": "Panama", "panamá": "Panama", "guatemala": "Guatemala",
-    "united states": "USA", "estados unidos": "USA", "canada": "Canada",
-    "canadá": "Canada", "cuba": "Cuba",
-  };
-  for (const [key, val] of Object.entries(map)) {
-    if (raw.includes(key)) return val;
-  }
-  return geo.country || null;
-}
-
-function normalizeCity(geo: Record<string, string>): string | null {
-  const city = geo.city || "";
-  if (/^[A-Z]\d{4}/.test(city)) {
-    const region = geo.region || "";
-    if (region.toLowerCase().includes("buenos aires")) return "Buenos Aires";
-    return null;
-  }
-  return city || null;
-}
-
-const today = new Date().toISOString().slice(0, 10);
-
-async function fetchLumaEvents(): Promise<HackathonData[]> {
-  const events: HackathonData[] = [];
-  for (const slug of LUMA_SEED_SLUGS) {
-    try {
-      const res = await fetch(`https://api.lu.ma/url?url=${slug}`);
-      if (!res.ok) continue;
-      const data = await res.json();
-      const event = data?.data?.event;
-      if (!event?.name) continue;
-      const geo = event.geo_address_info || {};
-
-      const isOnline = event.location_type === "online" || event.location_type === "zoom";
-      if (!isOnline && !isAmericas(geo, event.name)) continue;
-
-      const endDate = event.end_at ? event.end_at.slice(0, 10) : event.start_at?.slice(0, 10);
-      if (endDate && endDate < today) continue;
-
-      const locType = event.location_type === "offline" ? "presencial"
-        : isOnline ? "online" : null;
-
-      events.push({
-        id: slug,
-        name: event.name,
-        date_start: event.start_at ? event.start_at.slice(0, 10) : null,
-        date_end: event.end_at ? event.end_at.slice(0, 10) : null,
-        country: isOnline ? "Online" : normalizeCountry(geo),
-        city: normalizeCity(geo),
-        location: geo.address || null,
-        url: `https://lu.ma/${slug}`,
-        source: "luma",
-        type: locType,
-        tags: [],
-        description: "",
-      });
-    } catch { /* skip */ }
-  }
-  return events;
-}
-
-// --- Fetch hackathons from DoraHacks API ---
-const DORAHACKS_HEADERS = {
-  "Accept": "*/*",
-  "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
-  "Referer": "https://dorahacks.io/hackathon",
-  "sec-ch-ua": '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
-  "sec-fetch-dest": "empty",
-  "sec-fetch-mode": "cors",
-  "sec-fetch-site": "same-origin",
-};
-
-async function fetchDoraHacksEvents(): Promise<HackathonData[]> {
-  const events: HackathonData[] = [];
-  const pageSize = 200;
-
-  // First request to get total count
-  try {
-    const firstRes = await fetch(
-      `https://dorahacks.io/api/hackathon/?page=1&page_size=${pageSize}`,
-      { headers: DORAHACKS_HEADERS }
-    );
-    if (!firstRes.ok) return events;
-    const firstData = await firstRes.json();
-    const totalPages = Math.ceil((firstData.count || 0) / pageSize);
-    const allResults = [...(firstData.results || [])];
-
-    // Fetch remaining pages
-    for (let page = 2; page <= totalPages; page++) {
-      try {
-        const res = await fetch(
-          `https://dorahacks.io/api/hackathon/?page=${page}&page_size=${pageSize}`,
-          { headers: DORAHACKS_HEADERS }
-        );
-        if (!res.ok) break;
-        const data = await res.json();
-        allResults.push(...(data.results || []));
-      } catch { break; }
-    }
-
-    for (const h of allResults) {
-      if (!h.visible || h.archived) continue;
-
-      const endDate = h.end_time
-        ? new Date(h.end_time * 1000).toISOString().slice(0, 10)
-        : null;
-      if (endDate && endDate < today) continue;
-
-      const isVirtual = h.participation_form === "Virtual";
-      const isIRL = h.participation_form === "IRL";
-
-      // For IRL events, only include Americas
-      if (isIRL) {
-        const searchText = `${h.title} ${h.venue_address || ""} ${h.venue_name || ""}`
-          .toLowerCase();
-        const hasAmericas = AMERICAS_COUNTRIES.some(c => searchText.includes(c));
-        if (!hasAmericas) continue;
-      }
-
-      // Strip markdown from description
-      const rawDesc = (h.description || "")
-        .replace(/!\[.*?\]\(.*?\)/g, "")
-        .replace(/\[([^\]]*)\]\(.*?\)/g, "$1")
-        .replace(/#{1,6}\s+/g, "")
-        .replace(/\*\*([^*]*)\*\*/g, "$1")
-        .replace(/[*_~`]/g, "")
-        .replace(/<[^>]+>/g, "")
-        .replace(/\n{2,}/g, " ")
-        .trim()
-        .slice(0, 300);
-
-      const tags = h.field
-        ? h.field.split(",").map((t: string) => t.trim().toLowerCase()).filter(Boolean)
-        : [];
-
-      events.push({
-        id: "dh-" + h.id,
-        name: h.title,
-        date_start: h.start_time
-          ? new Date(h.start_time * 1000).toISOString().slice(0, 10)
-          : null,
-        date_end: endDate,
-        country: isVirtual ? "Online" : null,
-        city: null,
-        location: [h.venue_name, h.venue_address].filter(Boolean).join(", ") || null,
-        url: `https://dorahacks.io/hackathon/${h.uname || h.id}`,
-        source: "dorahacks",
-        type: isIRL ? "presencial" : isVirtual ? "online" : null,
-        tags,
-        description: rawDesc,
-      });
-    }
-  } catch { /* DoraHacks API unavailable */ }
-  return events;
-}
-
-// --- Fetch hackathon submissions from GitHub Issues ---
-// Supports two body formats:
-// 1. Terminal submit: - **Fecha**: 2026-04-16 - 2026-04-16
-// 2. GitHub issue form: ### Fecha inicio\n\n2026-04-16
-async function fetchGitHubIssues(): Promise<HackathonData[]> {
-  const events: HackathonData[] = [];
-  try {
-    const res = await fetch(
-      "https://api.github.com/repos/ainponce/hackathones/issues?state=open&per_page=100",
-      { headers: { "Accept": "application/vnd.github.v3+json", "User-Agent": "hackathones-build" } }
-    );
-    if (!res.ok) return events;
-    const issues = await res.json();
-
-    for (const issue of issues) {
-      if (issue.pull_request) continue;
-      if (!issue.title?.toLowerCase().startsWith("[hackathon]")) continue;
-      const body: string = issue.body || "";
-
-      // Format 1: - **Label**: value (from terminal submit)
-      const boldField = (label: string): string | null => {
-        const m = body.match(new RegExp(`\\*\\*${label}\\*\\*:\\s*(.+)`, "i"));
-        return m ? m[1].trim() : null;
-      };
-
-      // Format 2: ### Label\n\nvalue (from GitHub issue form)
-      const formField = (label: string): string | null => {
-        const m = body.match(new RegExp(`###\\s*${label}\\s*\\n+([^#\\n][^\\n]*)`, "i"));
-        return m ? m[1].trim() || null : null;
-      };
-
-      const field = (boldLabel: string, formLabel?: string): string | null => {
-        return boldField(boldLabel) || formField(formLabel || boldLabel) || null;
-      };
-
-      // Parse dates - handle both "Fecha: start - end" and separate "Fecha inicio"/"Fecha fin"
-      let date_start: string | null = null;
-      let date_end: string | null = null;
-      const fechaRaw = boldField("Fecha");
-      if (fechaRaw) {
-        const dates = fechaRaw.match(/\d{4}-\d{2}-\d{2}/g) || [];
-        date_start = dates[0] || null;
-        date_end = dates[1] || date_start;
-      } else {
-        const startRaw = formField("Fecha inicio");
-        const endRaw = formField("Fecha fin");
-        date_start = startRaw?.match(/\d{4}-\d{2}-\d{2}/)?.[0] || null;
-        date_end = endRaw?.match(/\d{4}-\d{2}-\d{2}/)?.[0] || date_start;
-      }
-
-      if (date_end && date_end < today) continue;
-
-      const tagsRaw = field("Tags");
-      const tags = tagsRaw ? tagsRaw.split(/,\s*/).map(t => t.trim()).filter(Boolean) : [];
-
-      // Description: ### Descripcion\n...(rest of body)
-      const descMatch = body.match(/###\s*Descripcion\s*\n+([\s\S]*?)$/i);
-      const description = descMatch ? descMatch[1].trim().slice(0, 300) : "";
-
-      const name = issue.title.replace(/^\[hackathon\]\s*/i, "").trim();
-      const id = "gh-" + issue.number;
-
-      events.push({
-        id,
-        name,
-        date_start,
-        date_end,
-        country: field("Pais"),
-        city: field("Ciudad"),
-        location: field("Lugar"),
-        url: field("URL", "URL del evento"),
-        source: "comunidad",
-        type: field("Tipo"),
-        tags,
-        description,
-      });
-    }
-  } catch { /* GitHub API unavailable */ }
-  return events;
-}
-
-let jsonEvents: HackathonData[] = [];
-try {
-  const { getCollection } = await import("astro:content");
-  const collection = await getCollection("hackathons");
-  jsonEvents = collection.map((h) => h.data as unknown as HackathonData);
-} catch { /* no local data */ }
-
-// Skip remote fetches only if SKIP_REMOTE env var is set (e.g. SKIP_REMOTE=1 pnpm dev)
-const skipRemote = !!import.meta.env.SKIP_REMOTE;
-const lumaEvents = skipRemote ? [] : await fetchLumaEvents();
-const doraEvents = skipRemote ? [] : await fetchDoraHacksEvents();
-const ghEvents = skipRemote ? [] : await fetchGitHubIssues();
-
-// --- Fetch LFG posts from GitHub Issues ---
-interface LfgPost {
-  id: string;
-  handle: string;
-  skills: string[];
-  hackathon: string;
-  contact: string;
-  message: string;
-  timestamp: string;
-}
-
-async function fetchLfgPosts(): Promise<LfgPost[]> {
-  const posts: LfgPost[] = [];
-  try {
-    const res = await fetch(
-      "https://api.github.com/repos/ainponce/hackathones/issues?state=open&per_page=100",
-      { headers: { "Accept": "application/vnd.github.v3+json", "User-Agent": "hackathones-build" } }
-    );
-    if (!res.ok) return posts;
-    const issues = await res.json();
-
-    for (const issue of issues) {
-      if (issue.pull_request) continue;
-      if (!issue.title?.toLowerCase().startsWith("[lfg]")) continue;
-      const body: string = issue.body || "";
-
-      const boldField = (label: string): string | null => {
-        const m = body.match(new RegExp(`\\*\\*${label}\\*\\*:\\s*(.+)`, "i"));
-        return m ? m[1].trim() : null;
-      };
-      const formField = (label: string): string | null => {
-        const m = body.match(new RegExp(`###\\s*${label}\\s*\\n+([^#\\n][^\\n]*)`, "i"));
-        return m ? m[1].trim() || null : null;
-      };
-      const field = (boldLabel: string, formLabel?: string): string | null => {
-        return boldField(boldLabel) || formField(formLabel || boldLabel) || null;
-      };
-
-      const handle = field("Handle", "Tu nombre o alias") || issue.title.replace(/^\[lfg\]\s*/i, "").trim();
-      const skillsRaw = field("Skills", "Skills (separados por coma)");
-      const skills = skillsRaw ? skillsRaw.split(/,\s*/).map((s: string) => s.trim()).filter(Boolean) : [];
-      const hackathon = field("Hackathon") || "";
-      const contact = field("Contacto", "Contacto (twitter, discord, telegram, email)") || "";
-      const message = (field("Mensaje", "Mensaje (opcional)") || "").slice(0, 200);
-
-      if (!hackathon) continue;
-
-      posts.push({ id: "lfg-" + issue.number, handle, skills, hackathon, contact, message, timestamp: issue.created_at?.slice(0, 10) || today });
-    }
-  } catch { /* GitHub API unavailable */ }
-  return posts;
-}
-
-const lfgPosts = skipRemote ? [] : await fetchLfgPosts();
-
-// --- Deduplication by name similarity + date proximity ---
-function normalize(s: string): string {
-  return s.toLowerCase()
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function wordSet(s: string): Set<string> {
-  return new Set(normalize(s).split(" ").filter(w => w.length > 2));
-}
-
-function nameSimilarity(a: string, b: string): number {
-  const setA = wordSet(a);
-  const setB = wordSet(b);
-  if (setA.size === 0 || setB.size === 0) return 0;
-  let common = 0;
-  for (const w of setA) if (setB.has(w)) common++;
-  return common / Math.max(setA.size, setB.size);
-}
-
-function datesClose(a: HackathonData, b: HackathonData): boolean {
-  if (!a.date_start || !b.date_start) return true; // can't tell, assume possible match
-  const diff = Math.abs(new Date(a.date_start).getTime() - new Date(b.date_start).getTime());
-  return diff <= 3 * 86400000; // 3 days
-}
-
-function isDuplicate(event: HackathonData, existing: HackathonData[]): boolean {
-  return existing.some(e =>
-    e.id === event.id ||
-    (nameSimilarity(e.name, event.name) >= 0.5 && datesClose(e, event))
-  );
-}
-
-// Merge with priority: comunidad > luma > dorahacks > scraper
-const merged: HackathonData[] = [...jsonEvents];
-for (const e of [...ghEvents, ...lumaEvents, ...doraEvents]) {
-  if (!isDuplicate(e, merged)) {
-    merged.push(e);
-  }
-}
-
-const filtered = merged.filter(e => {
-  const endDate = e.date_end || e.date_start;
-  if (endDate && endDate < today) return false;
-  return true;
-});
-
-const sorted = filtered.sort((a, b) => {
-  const da = a.date_start || "9999";
-  const db = b.date_start || "9999";
-  return da.localeCompare(db);
-});
+// Data is no longer fetched at build time. The terminal script below
+// reads straight from Supabase on the client via PostgREST — this keeps
+// deploys decoupled from issue/ingest events.
+const SUPABASE_URL = import.meta.env.PUBLIC_SUPABASE_URL;
+const SUPABASE_ANON_KEY = import.meta.env.PUBLIC_SUPABASE_ANON_KEY;
+const TODAY = new Date().toISOString().slice(0, 10);
 ---
 
 <BaseLayout>
+  <IntroLoader client:only="react" />
   <div id="terminal">
     <div id="output"></div>
     <div id="input-line">
@@ -439,9 +33,62 @@ const sorted = filtered.sort((a, b) => {
       <button data-cmd="help">help</button>
     </div>
   </div>
-  <script is:inline define:vars={{ hackathonsData: sorted, lfgData: lfgPosts }}>
-    const HACKATHONS = hackathonsData;
-    const LFG_POSTS = lfgData;
+  <script is:inline define:vars={{ SUPABASE_URL, SUPABASE_ANON_KEY, TODAY }}>
+    let HACKATHONS = [];
+    let LFG_POSTS = [];
+
+    async function loadData() {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+        console.warn("[supabase] missing PUBLIC_SUPABASE_URL or PUBLIC_SUPABASE_ANON_KEY env — home will show empty data");
+        return;
+      }
+      try {
+        const commonHeaders = {
+          apikey: SUPABASE_ANON_KEY,
+          Authorization: "Bearer " + SUPABASE_ANON_KEY,
+        };
+        const hackUrl = SUPABASE_URL + "/rest/v1/hackathons?select=*&status=eq.approved&or=(date_end.is.null,date_end.gte." + TODAY + ")&order=date_start.asc.nullslast";
+        const lfgUrl = SUPABASE_URL + "/rest/v1/lfg_posts?select=*&status=eq.approved&order=created_at.desc";
+        const [hackRes, lfgRes] = await Promise.all([
+          fetch(hackUrl, { headers: commonHeaders }),
+          fetch(lfgUrl, { headers: commonHeaders }),
+        ]);
+        const hackRows = hackRes.ok ? await hackRes.json() : [];
+        const lfgRows = lfgRes.ok ? await lfgRes.json() : [];
+        HACKATHONS = hackRows.map(function (r) {
+          return {
+            id: r.slug,
+            name: r.name,
+            date_start: r.date_start,
+            date_end: r.date_end,
+            country: r.country,
+            city: r.city,
+            location: r.location,
+            url: r.url,
+            source: r.source,
+            type: r.type,
+            tags: r.tags || [],
+            description: r.description || "",
+          };
+        });
+        LFG_POSTS = lfgRows.map(function (r) {
+          return {
+            id: r.id,
+            handle: r.handle,
+            skills: r.skills || [],
+            hackathon: r.hackathon_name,
+            contact: r.contact,
+            message: r.message || "",
+            timestamp: (r.created_at || "").slice(0, 10),
+          };
+        });
+      } catch (e) {
+        console.error("[supabase] fetch failed:", e);
+      }
+    }
+
+    const dataReady = loadData();
+
     const terminal = document.getElementById("terminal");
     const output = document.getElementById("output");
     const cmdInput = document.getElementById("cmd");
@@ -614,6 +261,7 @@ const sorted = filtered.sort((a, b) => {
     }
 
     async function cmdList(args) {
+      await dataReady;
       const now = new Date().toISOString().slice(0, 10);
       let results = HACKATHONS.filter(h => {
         const endDate = h.date_end || h.date_start;
@@ -683,6 +331,7 @@ const sorted = filtered.sort((a, b) => {
     }
 
     async function cmdHistorico(args) {
+      await dataReady;
       const now = new Date().toISOString().slice(0, 10);
       let results = HACKATHONS.filter(h => {
         const endDate = h.date_end || h.date_start;
@@ -768,6 +417,7 @@ const sorted = filtered.sort((a, b) => {
         return;
       }
 
+      await dataReady;
       const hackathonFilter = extractFlag(args, "--hackathon");
       let results = LFG_POSTS;
 
@@ -878,6 +528,7 @@ const sorted = filtered.sort((a, b) => {
     ];
 
     async function startLfgPost() {
+      await dataReady;
       lfgState = { step: 0, data: {}, _hackathonList: [] };
       await typePrint("publicar busqueda de equipo. escribe 'cancel' o Ctrl+C para cancelar.", "muted", 8);
       await typePrint("tu contacto sera publico.", "muted", 8);
@@ -1485,14 +1136,16 @@ const sorted = filtered.sort((a, b) => {
     const _urlParams = new URLSearchParams(window.location.search);
     const _linkedId = _urlParams.get("h");
     if (_linkedId) {
-      const _target = HACKATHONS.find(h => h.id === _linkedId);
-      if (_target) {
-        stopPlaceholder();
-        lockInput();
-        markHasOutput();
-        printEvent(_target);
-        unlockInput(true);
-      }
+      dataReady.then(function () {
+        const _target = HACKATHONS.find(h => h.id === _linkedId);
+        if (_target) {
+          stopPlaceholder();
+          lockInput();
+          markHasOutput();
+          printEvent(_target);
+          unlockInput(true);
+        }
+      });
     }
   </script>
 </BaseLayout>

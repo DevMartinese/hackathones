@@ -15,6 +15,15 @@ const {
   <head>
     <meta charset="utf-8" />
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <script is:inline>
+      // Prevent flash of terminal under the intro loader on home.
+      try {
+        var p = location.pathname;
+        if (p === "/" || p === "") {
+          document.documentElement.classList.add("intro-pending");
+        }
+      } catch (e) {}
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content={description} />
     <meta property="og:title" content={title} />
