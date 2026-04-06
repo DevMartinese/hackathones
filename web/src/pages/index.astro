@@ -263,9 +263,10 @@ const TODAY = new Date().toISOString().slice(0, 10);
     async function cmdList(args) {
       await dataReady;
       const now = new Date().toISOString().slice(0, 10);
+      // Only show events that haven't started yet — list is the upcoming
+      // queue, in-progress and past events live in `historico`.
       let results = HACKATHONS.filter(h => {
-        const endDate = h.date_end || h.date_start;
-        return !endDate || endDate >= now;
+        return !h.date_start || h.date_start > now;
       });
       const pais = extractFlag(args, "--pais");
       const ciudad = extractFlag(args, "--ciudad");
