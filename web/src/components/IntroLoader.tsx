@@ -337,9 +337,25 @@ export default function IntroLoader() {
     };
     raf = requestAnimationFrame(tick);
 
-    // Late-arrival fallback: audio loaded after the gesture happened.
+    // Late-arrival fallback: audio loaded AFTER the user already tapped.
+    // This is the common case in mobile / responsive-mode emulation, where
+    // the prominent `[ tap to begin ]` button (rendered under @media (pointer:
+    // coarse)) gets clicked the instant it appears — well before buildAudio()
+    // has finished importing Tone.js and rendering the reverb impulse response.
+    //
+    // We can't just call kickoffAudio directly: the AudioContext was created
+    // in suspended state by Tone.js, the user gesture in begin() found
+    // `audio === null` and skipped Tone.start(), so the context is still
+    // suspended and kickoffAudio's `state !== "running"` guard would bail.
+    //
+    // Resuming here works even though the user's transient activation has
+    // expired, because the document's sticky autoplay flag was set the moment
+    // they tapped — that flag persists for the lifetime of the document and
+    // satisfies Chrome/Safari's autoplay policy on its own.
     if (audio && !audioStartedRef.current) {
-      kickoffAudio(audio);
+      audio.Tone.start()
+        .then(() => kickoffAudio(audio))
+        .catch(() => {});
     }
 
     // Schedule shrink only — the settled transition is owned by the
