@@ -349,6 +349,13 @@ async function fetchGitHubIssues() {
           date_end =
             endRaw?.match(/\d{4}-\d{2}-\d{2}/)?.[0] || date_start;
         }
+        // Defensive: if the issue body has a typo where date_end < date_start
+        // (e.g. "2026-04-24 - 2026-04-03"), assume it's a single-day or
+        // mistyped end date and fall back to date_start instead of silently
+        // dropping the event for being "in the past".
+        if (date_start && date_end && date_end < date_start) {
+          date_end = date_start;
+        }
         if (date_end && date_end < today) continue;
 
         const tagsRaw = field("Tags");
