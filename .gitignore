@@ -24,3 +24,10 @@ dist/
 # Debug
 *.log
 screenshots/
+
+# MCP / local tooling
+.mcp.json
+.playwright-mcp/
+
+# Astro boilerplate
+web/README.md
