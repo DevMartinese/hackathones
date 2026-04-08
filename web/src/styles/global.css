@@ -481,3 +481,100 @@ html.intro-pending #terminal {
     bottom: 12vh;
   }
 }
+
+/* ---------- Theme transitions ----------
+   Smooth the switch between light and dark themes. Scoped to the exact
+   properties that actually change when data-theme flips so we don't
+   clobber the hover transitions already defined on buttons/links or
+   fight with the intro loader's own background transition. */
+
+html,
+body {
+  transition: background-color 0.8s cubic-bezier(0.65, 0, 0.35, 1), color 0.8s cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+/* #input-line paints its own background: var(--bg) on top of body so the
+   prompt row visually floats over the terminal output. Without its own
+   transition it snaps instantly while body transitions slowly, making the
+   `$` prompt look desynced from everything else during the fade. */
+#input-line {
+  transition: background-color 0.8s cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+#output .muted {
+  transition: color 0.8s cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+#output .event-block {
+  transition: border-color 0.8s cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+#input-line textarea {
+  transition: color 0.8s cubic-bezier(0.65, 0, 0.35, 1), caret-color 0.8s cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+#input-line .autocomplete-ghost,
+#input-line .placeholder-text {
+  transition: color 0.8s cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+/* The shader inversion can't smoothly transition — `filter: invert(0.5)`
+   collapses every pixel to uniform gray, and at the same time the body
+   background is also mid-gray, so the star loses all contrast and looks
+   washed out / desynced exactly at the midpoint. Instead we snap the
+   filter instantly at 40% of the way through the toggle and hide the
+   swap by fading the canvas out and back in via a keyframe animation
+   triggered by a temporary `.theme-flipping` class on the body. The
+   snap happens while the canvas is at opacity 0, so the user never sees
+   the gray intermediate. */
+.intro-stage canvas {
+  transition: filter 0s 0.32s;
+}
+
+@keyframes theme-canvas-flip {
+  0% { opacity: 1; }
+  40%, 60% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+body.theme-flipping .intro-stage canvas {
+  animation: theme-canvas-flip 0.8s cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+/* ---------- Dark theme ----------
+   Activated by the inline script in BaseLayout reading localStorage, or
+   at runtime by the `theme` command setting document.documentElement
+   dataset.theme. Light mode is the :root default, so data-theme="light"
+   correctly has no CSS effect. */
+
+:root[data-theme="dark"] {
+  --bg: #000000;
+  --text: #ffffff;
+  --muted: #666666;
+}
+
+/* Hardcoded greys in the light base that don't live in CSS vars. Overriding
+   them here keeps the base rules untouched and still gives dark mode the
+   right subtle separators / ghost text. */
+:root[data-theme="dark"] #output .event-block {
+  border-bottom-color: #111111;
+}
+
+:root[data-theme="dark"] #input-line .autocomplete-ghost,
+:root[data-theme="dark"] #input-line .placeholder-text {
+  color: #333333;
+}
+
+:root[data-theme="dark"] .quick-cmds button {
+  border-color: #222222;
+}
+
+/* IntroLoader shader: the TSL etch/ASCII post-process always outputs black
+   ink on a white paper (paper = vec3(1), ink = vec3(0)). Instead of piping
+   a theme uniform into the shader and rebuilding the pipeline on toggle,
+   invert the canvas pixels via a CSS filter — this flips paper→black and
+   ink→white instantly and responds live to `theme dark` / `theme light`
+   without touching any WebGPU code. */
+:root[data-theme="dark"] .intro-stage canvas {
+  filter: invert(1);
+}

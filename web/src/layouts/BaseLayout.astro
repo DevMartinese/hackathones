@@ -16,6 +16,18 @@ const {
     <meta charset="utf-8" />
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <script is:inline>
+      // Apply persisted theme before first paint so dark mode doesn't
+      // flash as light on reload. Runs inline in <head>, before any CSS
+      // or React hydration, so the intro loader picks up the right
+      // background / shader-invert state on its very first frame.
+      try {
+        var t = localStorage.getItem("theme");
+        if (t === "dark" || t === "light") {
+          document.documentElement.dataset.theme = t;
+        }
+      } catch (e) {}
+    </script>
+    <script is:inline>
       // Prevent flash of terminal under the intro loader on home.
       try {
         var p = location.pathname;

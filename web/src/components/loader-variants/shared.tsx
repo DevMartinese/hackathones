@@ -194,9 +194,13 @@ function AsciiPostEffect({
       const t4 = step(float(0.82), luma);
 
       const ink = max(max(h1.mul(t1), h2.mul(t2)), max(h3.mul(t3), h4.mul(t4)));
-      // alt paper/beige: vec3(0.929, 0.894, 0.816) — #ede4d0
-      const paper = vec3(1);
-      return vec4(mix(paper, vec3(0), ink), 1);
+      // Paper is transparent (alpha=0) instead of an opaque white square
+      // so the body background is visible through the empty canvas pixels
+      // and transitions smoothly with the rest of the page under the
+      // theme toggle. Ink is emitted as opaque black; the dark-mode
+      // CSS `filter: invert(1)` flips it to white, hidden by the
+      // fade-out-in animation during the 0.32s filter snap.
+      return vec4(vec3(0), ink);
     });
 
     const blendFn = Fn(() => {
@@ -246,8 +250,17 @@ export function ShaderCanvas({
         const renderer = new WebGPURenderer({
           canvas: props.canvas as HTMLCanvasElement,
           antialias: true,
+          // Transparent canvas context so the etch shader can return an
+          // alpha=0 paper; the body bg (which is the one that transitions
+          // smoothly with the theme toggle) then shows through the empty
+          // regions and the star reads as floating in place rather than
+          // sitting on a stale white square during the fade.
+          alpha: true,
         });
         await renderer.init();
+        // Explicit transparent clear color — without this some backends
+        // inherit an opaque default and defeat the `alpha: true` context.
+        renderer.setClearColor(0x000000, 0);
         return renderer as unknown as THREE.WebGLRenderer;
       }}
       onCreated={onReady ? () => onReady() : undefined}
