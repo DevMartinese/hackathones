@@ -1,20 +1,67 @@
 ---
+import { loadStrings, type Locale } from "../i18n";
+
 interface Props {
+  locale: Locale;
   title?: string;
   description?: string;
 }
 
-const {
-  title = "Hackathones - Directorio de hackathones en America",
-  description = "Directorio de hackathones en America. Terminal interactiva para buscar y enviar hackathones.",
-} = Astro.props;
+const { locale, title: titleOverride, description: descriptionOverride } = Astro.props;
+const T = loadStrings(locale);
+const title = titleOverride ?? (T["meta.title"] as string);
+const description = descriptionOverride ?? (T["meta.description"] as string);
+const htmlLang = T["meta.html.lang"] as string;
 ---
 
 <!doctype html>
-<html lang="es">
+<html lang={htmlLang}>
   <head>
     <meta charset="utf-8" />
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <script is:inline>
+      // Locale detection + redirect runs BEFORE any other script so the user
+      // never sees a flash of the wrong language. Explicit URL always wins
+      // over saved preference, so a shared `/es/` link stays `/es/` even if
+      // the recipient has a different browser language. Redirects only
+      // happen on the default route (`/`):
+      //   - `/` + saved pref → redirect to the saved locale's route
+      //   - `/` + no pref → auto-detect from navigator.language, persist,
+      //     and redirect if not English
+      //   - `/` + saved "en" or detected "en" → stay
+      //   - `/es/` or `/pt/` → honor the URL and sync the saved pref to
+      //     match, so future visits to `/` remember the choice
+      // Query string and hash are preserved so `?h=<id>` deep links survive.
+      try {
+        var LOCALES = ["en", "es", "pt"];
+        var path = location.pathname;
+        var segments = path.split("/").filter(Boolean);
+        var current = segments.length > 0 && LOCALES.indexOf(segments[0]) !== -1 ? segments[0] : "en";
+
+        if (current !== "en") {
+          // Explicit non-default locale URL — trust it and sync the pref.
+          localStorage.setItem("lang", current);
+        } else {
+          var saved = localStorage.getItem("lang");
+          var target = null;
+
+          if (saved && LOCALES.indexOf(saved) !== -1) {
+            if (saved !== "en") target = saved;
+          } else {
+            // First visit on `/` with no pref: auto-detect.
+            var nav = (navigator.language || "en").toLowerCase();
+            var detected = nav.indexOf("es") === 0 ? "es" : nav.indexOf("pt") === 0 ? "pt" : "en";
+            localStorage.setItem("lang", detected);
+            if (detected !== "en") target = detected;
+          }
+
+          if (target) {
+            var newPath = "/" + target + "/";
+            location.replace(newPath + location.search + location.hash);
+          }
+        }
+      } catch (e) {}
+    </script>
     <script is:inline>
       // Apply persisted theme before first paint so dark mode doesn't
       // flash as light on reload. Runs inline in <head>, before any CSS
@@ -31,7 +78,7 @@ const {
       // Prevent flash of terminal under the intro loader on home.
       try {
         var p = location.pathname;
-        if (p === "/" || p === "") {
+        if (p === "/" || p === "" || p === "/es/" || p === "/es" || p === "/pt/" || p === "/pt") {
           document.documentElement.classList.add("intro-pending");
         }
       } catch (e) {}
@@ -45,10 +92,15 @@ const {
     <meta property="og:image" content="https://hackathones.com/og-image.png" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
+    <meta property="og:locale" content={htmlLang} />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content="https://hackathones.com/og-image.png" />
+    <link rel="alternate" hreflang="en" href="https://hackathones.com/" />
+    <link rel="alternate" hreflang="es" href="https://hackathones.com/es/" />
+    <link rel="alternate" hreflang="pt" href="https://hackathones.com/pt/" />
+    <link rel="alternate" hreflang="x-default" href="https://hackathones.com/" />
     <title>{title}</title>
   </head>
   <body>
