@@ -1,5 +1,8 @@
-// Ingest hackathon data from Luma + DoraHacks + GitHub Issues + scraper JSON
-// and upsert into Supabase. Designed to run from a GitHub Action on a cron.
+// Ingest hackathon data from Luma + DoraHacks + Devpost + GitHub Issues and
+// upsert into Supabase. Designed to run from a GitHub Action on a cron every
+// 6h (see .github/workflows/ingest.yml). Also re-runs on-demand whenever a
+// [hackathon]/[lfg] issue is opened, edited, closed, or (un)labeled so the
+// community feed reflects triage decisions instantly.
 //
 // Required env:
 //   SUPABASE_URL                  - Project URL (https://xxx.supabase.co)
@@ -7,14 +10,8 @@
 //
 // Optional env:
 //   GITHUB_TOKEN                  - To bypass GitHub API rate limits
-//   SCRAPER_JSON_PATH             - Defaults to ../src/data/hackathons.json (relative to this file)
 
 import { createClient } from "@supabase/supabase-js";
-import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ---------- Config ----------
 
@@ -24,10 +21,6 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   console.error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
   process.exit(1);
 }
-
-const SCRAPER_JSON_PATH =
-  process.env.SCRAPER_JSON_PATH ||
-  resolve(__dirname, "..", "src", "data", "hackathons.json");
 
 const GITHUB_REPO = "ainponce/hackathones";
 
@@ -65,6 +58,34 @@ const DORAHACKS_HEADERS = {
   "sec-fetch-mode": "cors",
   "sec-fetch-site": "same-origin",
 };
+
+// Devpost's `/api/hackathons` endpoint is public (no auth, no cookie), but it
+// 403s if you hit it with a default Node fetch UA. The minimal set of headers
+// below is enough to impersonate a real browser — matching what the hackathon
+// listing page sends from Chrome. No personal session cookie required.
+const DEVPOST_HEADERS = {
+  Accept: "*/*",
+  "Accept-Language": "en-US,en;q=0.9",
+  "User-Agent":
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+  Referer: "https://devpost.com/hackathons",
+  "sec-ch-ua":
+    '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
+  "sec-ch-ua-mobile": "?0",
+  "sec-ch-ua-platform": '"macOS"',
+  "sec-fetch-dest": "empty",
+  "sec-fetch-mode": "cors",
+  "sec-fetch-site": "same-origin",
+};
+
+// Cap Devpost pagination at 10 pages (400 events) as a safety net so a
+// runaway `total_count` can't starve the job or trigger rate limits.
+const DEVPOST_PER_PAGE = 40;
+const DEVPOST_MAX_PAGES = 10;
+// Delay between Devpost page fetches. Low enough to finish in a few seconds
+// for typical `total_count` (~100–200), high enough that the AWS ALB in
+// front of Devpost doesn't flag a burst as automated traffic.
+const DEVPOST_PAGE_DELAY_MS = 1500;
 
 const GITHUB_HEADERS = {
   Accept: "application/vnd.github.v3+json",
@@ -159,6 +180,124 @@ function normalizeType(t) {
   if (v === "irl") return "presencial";
   if (v === "virtual" || v === "remote") return "online";
   if (v === "hybrid") return "hibrido";
+  return null;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Devpost returns `submission_period_dates` as a human-readable string in
+// one of four shapes observed in the live API response:
+//   "Jul 01, 2026 - Jun 01, 2027"   // cross-year range (both halves carry a year)
+//   "May 18 - Jun 15, 2026"         // cross-month range (single year at end)
+//   "Apr 24 - 26, 2026"             // same-month range (second half is just a day)
+//   "Dec 31, 2026"                  // single day
+// No ISO alternative is exposed, so we parse the string back to start/end
+// ISO dates. Patterns are tried most-specific first; anything that matches
+// none returns { start: null, end: null } and the event still flows through
+// with unknown dates (it just won't show up in the upcoming filter).
+const DEVPOST_MONTHS = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+};
+
+function _devpostToISO(year, monthName, day) {
+  const m = DEVPOST_MONTHS[monthName.slice(0, 3).toLowerCase()];
+  if (!m) return null;
+  const d = parseInt(day, 10);
+  if (isNaN(d) || d < 1 || d > 31) return null;
+  return `${year}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
+function parseDevpostDates(raw) {
+  if (!raw || typeof raw !== "string") return { start: null, end: null };
+  const s = raw.trim();
+
+  // "Mon DD, YYYY - Mon DD, YYYY" (cross-year range — both halves carry a
+  // year, e.g. "Jul 01, 2026 - Jun 01, 2027"). Tried first because it's the
+  // only shape that has two separate years; otherwise the cross-month regex
+  // below would swallow the first half and drop the second year.
+  let m = s.match(
+    /^(\w{3,})\s+(\d{1,2}),?\s+(\d{4})\s*[-–]\s*(\w{3,})\s+(\d{1,2}),?\s+(\d{4})$/
+  );
+  if (m) {
+    return {
+      start: _devpostToISO(m[3], m[1], m[2]),
+      end: _devpostToISO(m[6], m[4], m[5]),
+    };
+  }
+
+  // "Mon DD - Mon DD, YYYY" (cross-month range, single year at the end).
+  m = s.match(
+    /^(\w{3,})\s+(\d{1,2})\s*[-–]\s*(\w{3,})\s+(\d{1,2}),?\s+(\d{4})$/
+  );
+  if (m) {
+    return {
+      start: _devpostToISO(m[5], m[1], m[2]),
+      end: _devpostToISO(m[5], m[3], m[4]),
+    };
+  }
+
+  // "Mon DD - DD, YYYY" (same-month range — second half is just a day).
+  m = s.match(/^(\w{3,})\s+(\d{1,2})\s*[-–]\s*(\d{1,2}),?\s+(\d{4})$/);
+  if (m) {
+    return {
+      start: _devpostToISO(m[4], m[1], m[2]),
+      end: _devpostToISO(m[4], m[1], m[3]),
+    };
+  }
+
+  // "Mon DD, YYYY" (single day).
+  m = s.match(/^(\w{3,})\s+(\d{1,2}),?\s+(\d{4})$/);
+  if (m) {
+    const iso = _devpostToISO(m[3], m[1], m[2]);
+    return { start: iso, end: iso };
+  }
+
+  return { start: null, end: null };
+}
+
+// Best-effort country extraction from Devpost's free-text location string.
+// Devpost doesn't return structured geo, just a venue name that may or may
+// not end in a recognizable country. We check the lower-cased string against
+// a curated list of country aliases that actually show up in hackathon data
+// and return a normalized label; anything we don't recognize returns null
+// and the event falls through with `country=null` (the venue still renders
+// in the `location` field).
+const DEVPOST_COUNTRY_MAP = [
+  ["united states", "USA"], ["u.s.a", "USA"], [" usa", "USA"], ["usa ", "USA"], [", usa", "USA"],
+  ["canada", "Canada"], ["canadá", "Canada"],
+  ["mexico", "Mexico"], ["méxico", "Mexico"],
+  ["brasil", "Brasil"], ["brazil", "Brasil"],
+  ["argentina", "Argentina"], ["chile", "Chile"], ["colombia", "Colombia"],
+  ["peru", "Peru"], ["uruguay", "Uruguay"],
+  ["germany", "Germany"], ["deutschland", "Germany"],
+  ["united kingdom", "UK"], [" uk", "UK"], [", uk", "UK"],
+  ["france", "France"], ["spain", "Spain"], ["españa", "Spain"],
+  ["italy", "Italy"], ["netherlands", "Netherlands"], ["belgium", "Belgium"],
+  ["switzerland", "Switzerland"], ["ireland", "Ireland"], ["poland", "Poland"],
+  ["portugal", "Portugal"], ["sweden", "Sweden"], ["norway", "Norway"],
+  ["denmark", "Denmark"], ["finland", "Finland"], ["austria", "Austria"],
+  ["india", "India"], ["nepal", "Nepal"], ["pakistan", "Pakistan"],
+  ["bangladesh", "Bangladesh"], ["sri lanka", "Sri Lanka"],
+  ["china", "China"], ["japan", "Japan"], ["south korea", "South Korea"],
+  ["korea", "South Korea"], ["taiwan", "Taiwan"], ["hong kong", "Hong Kong"],
+  ["singapore", "Singapore"], ["malaysia", "Malaysia"], ["indonesia", "Indonesia"],
+  ["philippines", "Philippines"], ["vietnam", "Vietnam"], ["thailand", "Thailand"],
+  ["australia", "Australia"], ["new zealand", "New Zealand"],
+  ["turkey", "Turkey"], ["türkiye", "Turkey"],
+  ["israel", "Israel"], ["united arab emirates", "UAE"], [" uae", "UAE"],
+  ["saudi arabia", "Saudi Arabia"], ["egypt", "Egypt"],
+  ["south africa", "South Africa"], ["nigeria", "Nigeria"], ["kenya", "Kenya"],
+];
+
+function extractDevpostCountry(location) {
+  if (!location) return null;
+  const l = ` ${location.toLowerCase()} `;
+  for (const [needle, label] of DEVPOST_COUNTRY_MAP) {
+    if (l.includes(needle)) return label;
+  }
   return null;
 }
 
@@ -291,6 +430,129 @@ async function fetchDoraHacksEvents() {
   return events;
 }
 
+async function fetchDevpostEvents() {
+  // Devpost's public `/api/hackathons` endpoint paginates via `?page=N` and
+  // reports `meta.total_count`. We fetch page 1 up-front to learn how many
+  // pages exist, then walk the rest sequentially with a small delay between
+  // requests so the AWS ALB in front of Devpost doesn't flag the burst. The
+  // sequential + delay pattern is intentional: parallelizing all pages at
+  // once works today but raises the profile of the job and risks future
+  // rate-limiting, and cron-every-6h doesn't need the latency win.
+  const events = [];
+  let allHackathons = [];
+
+  try {
+    const buildUrl = (page) =>
+      `https://devpost.com/api/hackathons?status=upcoming&per_page=${DEVPOST_PER_PAGE}&page=${page}`;
+
+    const first = await fetch(buildUrl(1), { headers: DEVPOST_HEADERS });
+    if (!first.ok) {
+      console.warn(`[devpost] page 1 failed: ${first.status}`);
+      return events;
+    }
+    const firstJson = await first.json();
+    const totalCount = firstJson?.meta?.total_count || 0;
+    const totalPages = Math.min(
+      DEVPOST_MAX_PAGES,
+      Math.max(1, Math.ceil(totalCount / DEVPOST_PER_PAGE))
+    );
+    allHackathons = Array.isArray(firstJson?.hackathons)
+      ? [...firstJson.hackathons]
+      : [];
+
+    for (let page = 2; page <= totalPages; page++) {
+      await sleep(DEVPOST_PAGE_DELAY_MS);
+      try {
+        const res = await fetch(buildUrl(page), { headers: DEVPOST_HEADERS });
+        if (!res.ok) {
+          console.warn(`[devpost] page ${page} failed: ${res.status}`);
+          break;
+        }
+        const json = await res.json();
+        if (Array.isArray(json?.hackathons)) {
+          allHackathons.push(...json.hackathons);
+        }
+      } catch (e) {
+        console.warn(`[devpost] page ${page} error: ${e.message}`);
+        break;
+      }
+    }
+  } catch (e) {
+    console.warn("[devpost] fetch failed:", e.message);
+    return events;
+  }
+
+  for (const h of allHackathons) {
+    if (!h || !h.id || !h.title) continue;
+
+    const { start, end } = parseDevpostDates(h.submission_period_dates || "");
+    // Skip events whose end date (or start, if no end) is already in the
+    // past. Devpost sometimes returns events with `status=upcoming` that
+    // just finished — defensive filter.
+    const endForFilter = end || start;
+    if (endForFilter && endForFilter < today) continue;
+
+    const loc = h.displayed_location || {};
+    const locText = (loc.location || "").trim();
+    const lowerLoc = locText.toLowerCase();
+    // Devpost uses two icons: "globe" for fully online, "map-marker-alt"
+    // for physical or hybrid. A venue string like "TWA Hotel + Online" or
+    // "South SF Conference Center + Online" means hybrid.
+    const isOnline =
+      loc.icon === "globe" || lowerLoc === "online" || lowerLoc === "";
+    const isHybrid =
+      !isOnline && /\+\s*online|online\s*\+/i.test(locText);
+    let type;
+    if (isOnline) type = "online";
+    else if (isHybrid) type = "hibrido";
+    else type = "presencial";
+
+    const country = isOnline ? "Online" : extractDevpostCountry(locText);
+
+    const tags = Array.isArray(h.themes)
+      ? h.themes
+          .map((t) => (t?.name || "").toLowerCase().trim())
+          .filter(Boolean)
+      : [];
+
+    // Devpost wraps currency values in an HTML `<span>` like
+    // `$<span data-currency-value>20,000</span>`. Strip tags for a clean
+    // plain-text fragment suitable for the description line.
+    const prizeClean = (h.prize_amount || "")
+      .replace(/<[^>]+>/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    const descParts = [];
+    if (h.organization_name) descParts.push(`by ${h.organization_name}`);
+    if (prizeClean && !/\$?0$/.test(prizeClean)) {
+      descParts.push(`prize ${prizeClean}`);
+    }
+    if (typeof h.registrations_count === "number" && h.registrations_count > 0) {
+      descParts.push(`${h.registrations_count} registered`);
+    }
+    const description = descParts.join(" · ").slice(0, 300);
+
+    events.push({
+      slug: `devpost-${h.id}`,
+      name: h.title,
+      date_start: start,
+      date_end: end,
+      country,
+      city: null,
+      location: isOnline ? null : locText || null,
+      url: h.url || null,
+      source: "devpost",
+      type,
+      tags,
+      description,
+      status: "approved",
+    });
+  }
+
+  return events;
+}
+
 async function fetchGitHubIssues() {
   // Fetch once, parse both [hackathon] and [lfg] entries. Also track the
   // slugs/source_keys we saw so the caller can soft-delete anything in DB
@@ -332,19 +594,25 @@ async function fetchGitHubIssues() {
       const field = (boldLabel, formLabel) =>
         boldField(boldLabel) || formField(formLabel || boldLabel) || null;
 
+      // Labels are looked up in English first (what the post-i18n terminal
+      // emits) and fall back to Spanish so we keep parsing issues that were
+      // opened before the i18n refactor.
+      const bilingualField = (en, es, enForm, esForm) =>
+        field(en, enForm) || field(es, esForm);
+
       const lower = title.toLowerCase();
       if (lower.startsWith("[hackathon]")) {
         seenHackSlugs.add(`gh-${issue.number}`);
         let date_start = null;
         let date_end = null;
-        const fechaRaw = boldField("Fecha");
-        if (fechaRaw) {
-          const dates = fechaRaw.match(/\d{4}-\d{2}-\d{2}/g) || [];
+        const dateRaw = boldField("Date") || boldField("Fecha");
+        if (dateRaw) {
+          const dates = dateRaw.match(/\d{4}-\d{2}-\d{2}/g) || [];
           date_start = dates[0] || null;
           date_end = dates[1] || date_start;
         } else {
-          const startRaw = formField("Fecha inicio");
-          const endRaw = formField("Fecha fin");
+          const startRaw = formField("Start date") || formField("Fecha inicio");
+          const endRaw = formField("End date") || formField("Fecha fin");
           date_start = startRaw?.match(/\d{4}-\d{2}-\d{2}/)?.[0] || null;
           date_end =
             endRaw?.match(/\d{4}-\d{2}-\d{2}/)?.[0] || date_start;
@@ -362,7 +630,7 @@ async function fetchGitHubIssues() {
         const tags = tagsRaw
           ? tagsRaw.split(/,\s*/).map((t) => t.trim()).filter(Boolean)
           : [];
-        const descMatch = body.match(/###\s*Descripcion\s*\n+([\s\S]*?)$/i);
+        const descMatch = body.match(/###\s*(?:Description|Descripcion)\s*\n+([\s\S]*?)$/i);
         const description = descMatch ? descMatch[1].trim().slice(0, 300) : "";
 
         hackathons.push({
@@ -370,12 +638,12 @@ async function fetchGitHubIssues() {
           name: title.replace(/^\[hackathon\]\s*/i, "").trim(),
           date_start,
           date_end,
-          country: field("Pais"),
-          city: field("Ciudad"),
-          location: field("Lugar"),
-          url: field("URL", "URL del evento"),
+          country: bilingualField("Country", "Pais"),
+          city: bilingualField("City", "Ciudad"),
+          location: bilingualField("Venue", "Lugar"),
+          url: bilingualField("URL", "URL", "Event URL", "URL del evento"),
           source: "comunidad",
-          type: normalizeType(field("Tipo")),
+          type: normalizeType(bilingualField("Type", "Tipo")),
           tags,
           description,
           status: issueStatus,
@@ -383,20 +651,25 @@ async function fetchGitHubIssues() {
       } else if (lower.startsWith("[lfg]")) {
         seenLfgSourceKeys.add(`gh-${issue.number}`);
         const handle =
+          field("Handle", "Your name or handle") ||
           field("Handle", "Tu nombre o alias") ||
           title.replace(/^\[lfg\]\s*/i, "").trim();
-        const skillsRaw = field("Skills", "Skills (separados por coma)");
+        const skillsRaw =
+          field("Skills", "Skills (comma-separated)") ||
+          field("Skills", "Skills (separados por coma)");
         const skills = skillsRaw
           ? skillsRaw.split(/,\s*/).map((s) => s.trim()).filter(Boolean)
           : [];
         const hackathon = field("Hackathon") || "";
         const contact =
+          field("Contact", "Contact (twitter, discord, telegram, email)") ||
           field("Contacto", "Contacto (twitter, discord, telegram, email)") ||
           "";
-        const message = (field("Mensaje", "Mensaje (opcional)") || "").slice(
-          0,
-          200
-        );
+        const message = (
+          field("Message", "Message (optional)") ||
+          field("Mensaje", "Mensaje (opcional)") ||
+          ""
+        ).slice(0, 200);
         if (!hackathon) continue;
         lfg.push({
           source_key: `gh-${issue.number}`,
@@ -421,61 +694,32 @@ async function fetchGitHubIssues() {
   }
 }
 
-async function loadScraperJson() {
-  try {
-    const raw = await readFile(SCRAPER_JSON_PATH, "utf8");
-    const data = JSON.parse(raw);
-    if (!Array.isArray(data)) return [];
-    return data
-      .filter((h) => {
-        const endDate = h.date_end || h.date_start;
-        return !endDate || endDate >= today;
-      })
-      .map((h) => ({
-        slug: h.id?.startsWith("x-") ? h.id : `x-${h.id || h.name}`,
-        name: h.name,
-        date_start: h.date_start || null,
-        date_end: h.date_end || null,
-        country: h.country || null,
-        city: h.city || null,
-        location: h.location || null,
-        url: h.url || null,
-        source: "x",
-        type: normalizeType(h.type),
-        tags: Array.isArray(h.tags) ? h.tags : [],
-        description: h.description || "",
-        status: "approved",
-      }));
-  } catch (e) {
-    console.warn(`Could not read ${SCRAPER_JSON_PATH}: ${e.message}`);
-    return [];
-  }
-}
-
 // ---------- Main ----------
 
 async function main() {
   console.log("[ingest] starting…");
   const t0 = Date.now();
 
-  const [scraperEvents, lumaEvents, doraEvents, ghResult] = await Promise.all([
-    loadScraperJson(),
+  const [lumaEvents, doraEvents, devpostEvents, ghResult] = await Promise.all([
     fetchLumaEvents(),
     fetchDoraHacksEvents(),
+    fetchDevpostEvents(),
     fetchGitHubIssues(),
   ]);
 
   console.log(
-    `[ingest] fetched: scraper=${scraperEvents.length} luma=${lumaEvents.length} dora=${doraEvents.length} gh=${ghResult.hackathons.length} lfg=${ghResult.lfg.length} (${Date.now() - t0}ms)`
+    `[ingest] fetched: luma=${lumaEvents.length} dora=${doraEvents.length} devpost=${devpostEvents.length} gh=${ghResult.hackathons.length} lfg=${ghResult.lfg.length} (${Date.now() - t0}ms)`
   );
 
-  // Dedup priority: comunidad > scraper > luma > dorahacks
+  // Dedup priority: comunidad > luma > dorahacks > devpost. Community
+  // submissions win because a human reviewer curated them; structured sources
+  // are preferred over raw APIs when they carry the same event.
   const merged = [];
   for (const e of [
     ...ghResult.hackathons,
-    ...scraperEvents,
     ...lumaEvents,
     ...doraEvents,
+    ...devpostEvents,
   ]) {
     if (!isDuplicate(e, merged)) merged.push(e);
   }

@@ -1,0 +1,1364 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import IntroLoader from "../components/IntroLoader.tsx";
+import { loadStrings, type Locale } from "../i18n";
+
+// Data is no longer fetched at build time. The terminal script below
+// reads straight from Supabase on the client via PostgREST — this keeps
+// deploys decoupled from issue/ingest events.
+const SUPABASE_URL = import.meta.env.PUBLIC_SUPABASE_URL;
+const SUPABASE_ANON_KEY = import.meta.env.PUBLIC_SUPABASE_ANON_KEY;
+const TODAY = new Date().toISOString().slice(0, 10);
+
+// The locale is passed in by each per-locale page wrapper
+// (src/pages/index.astro, src/pages/es/index.astro, src/pages/pt/index.astro).
+// We load the matching dict at build time and serialize it into `T` so the
+// inline terminal script can look up strings without any runtime fetch.
+interface Props {
+  locale: Locale;
+}
+const { locale } = Astro.props;
+const T = loadStrings(locale);
+const LOCALE = locale;
+---
+
+<BaseLayout locale={locale}>
+  <IntroLoader client:only="react" />
+  <div id="terminal">
+    <div id="output"></div>
+    <div id="input-line">
+      <span class="prompt">$&nbsp;</span>
+      <div class="input-wrap">
+        <textarea id="cmd" rows="1" autofocus autocomplete="off" spellcheck="false"></textarea>
+        <div class="ghost-overlay" id="ghost-overlay" aria-hidden="true">
+          <span id="ghost-mirror"></span><span id="autocomplete-ghost" class="autocomplete-ghost"></span>
+        </div>
+        <span id="placeholder" class="placeholder-text"></span>
+      </div>
+    </div>
+    <div id="quick-cmds" class="quick-cmds">
+      <button data-cmd="list">list</button>
+      <button data-cmd="list --legacy">--legacy</button>
+      <button data-cmd="submit">submit</button>
+      <button data-cmd="lfg">lfg</button>
+      <button data-cmd="theme">theme</button>
+      <button data-cmd="clear">clear</button>
+      <button data-cmd="help">help</button>
+    </div>
+  </div>
+  <script is:inline define:vars={{ SUPABASE_URL, SUPABASE_ANON_KEY, TODAY, T, LOCALE }}>
+    let HACKATHONS = [];
+    let LFG_POSTS = [];
+    let themeFlipTimeout = null;
+
+    // --- i18n helper ---
+    // T is a flat dict of string → (string | { one, other }). Plural-aware
+    // keys use { one, other } and are selected via vars.count. Any {name}
+    // tokens in the value are replaced from vars. Missing keys fall through
+    // to the key itself, which makes untranslated strings obvious in dev.
+    function t(key, vars) {
+      vars = vars || {};
+      var val = T[key];
+      if (val && typeof val === "object" && typeof vars.count === "number") {
+        val = vars.count === 1 ? val.one : val.other;
+      }
+      if (typeof val !== "string") return key;
+      return val.replace(/\{(\w+)\}/g, function (_m, k) {
+        return vars[k] !== undefined && vars[k] !== null ? String(vars[k]) : "";
+      });
+    }
+
+    async function loadData() {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+        console.warn("[supabase] missing PUBLIC_SUPABASE_URL or PUBLIC_SUPABASE_ANON_KEY env — home will show empty data");
+        return;
+      }
+      try {
+        const commonHeaders = {
+          apikey: SUPABASE_ANON_KEY,
+          Authorization: "Bearer " + SUPABASE_ANON_KEY,
+        };
+        const hackUrl = SUPABASE_URL + "/rest/v1/hackathons?select=*&status=eq.approved&or=(date_end.is.null,date_end.gte." + TODAY + ")&order=date_start.asc.nullslast";
+        const lfgUrl = SUPABASE_URL + "/rest/v1/lfg_posts?select=*&status=eq.approved&order=created_at.desc";
+        const [hackRes, lfgRes] = await Promise.all([
+          fetch(hackUrl, { headers: commonHeaders }),
+          fetch(lfgUrl, { headers: commonHeaders }),
+        ]);
+        const hackRows = hackRes.ok ? await hackRes.json() : [];
+        const lfgRows = lfgRes.ok ? await lfgRes.json() : [];
+        HACKATHONS = hackRows.map(function (r) {
+          return {
+            id: r.slug,
+            name: r.name,
+            date_start: r.date_start,
+            date_end: r.date_end,
+            country: r.country,
+            city: r.city,
+            location: r.location,
+            url: r.url,
+            source: r.source,
+            type: r.type,
+            tags: r.tags || [],
+            description: r.description || "",
+          };
+        });
+        LFG_POSTS = lfgRows.map(function (r) {
+          return {
+            id: r.id,
+            handle: r.handle,
+            skills: r.skills || [],
+            hackathon: r.hackathon_name,
+            contact: r.contact,
+            message: r.message || "",
+            timestamp: (r.created_at || "").slice(0, 10),
+          };
+        });
+      } catch (e) {
+        console.error("[supabase] fetch failed:", e);
+      }
+    }
+
+    const dataReady = loadData();
+
+    const terminal = document.getElementById("terminal");
+    const output = document.getElementById("output");
+    const cmdInput = document.getElementById("cmd");
+    const inputLine = document.getElementById("input-line");
+    const history = [];
+    let historyIndex = -1;
+    let submitState = null;
+    let isTyping = false;
+    let suppressAutoScroll = false;
+
+    // --- Typing engine ---
+
+    function typeText(text, el, speed) {
+      return new Promise((resolve) => {
+        let i = 0;
+        el.classList.add("typing-cursor");
+        function tick() {
+          if (i < text.length) {
+            if (text[i] === '<') {
+              const end = text.indexOf('>', i);
+              if (end !== -1) { el.innerHTML += text.slice(i, end + 1); i = end + 1; }
+              else { el.innerHTML += text[i++]; }
+            } else if (text[i] === '&') {
+              const end = text.indexOf(';', i);
+              if (end !== -1 && end - i < 8) { el.innerHTML += text.slice(i, end + 1); i = end + 1; }
+              else { el.innerHTML += text[i++]; }
+            } else { el.innerHTML += text[i++]; }
+            if (!suppressAutoScroll) window.scrollTo(0, document.body.scrollHeight);
+            setTimeout(tick, speed);
+          } else { el.classList.remove("typing-cursor"); resolve(); }
+        }
+        tick();
+      });
+    }
+
+    async function typePrint(html, cls, speed) {
+      speed = speed || 8;
+      markHasOutput();
+      const div = document.createElement("div");
+      div.className = "line" + (cls ? " " + cls : "");
+      div.style.opacity = "1";
+      output.appendChild(div);
+      await typeText(html, div, speed);
+      if (!suppressAutoScroll) window.scrollTo(0, document.body.scrollHeight);
+    }
+
+    function print(html, cls) {
+      markHasOutput();
+      const div = document.createElement("div");
+      div.className = "line" + (cls ? " " + cls : "");
+      div.innerHTML = html;
+      output.appendChild(div);
+      if (!suppressAutoScroll) window.scrollTo(0, document.body.scrollHeight);
+    }
+
+    function printRaw(text, cls) {
+      markHasOutput();
+      const div = document.createElement("div");
+      div.className = "line" + (cls ? " " + cls : "");
+      div.textContent = text;
+      output.appendChild(div);
+      if (!suppressAutoScroll) window.scrollTo(0, document.body.scrollHeight);
+    }
+
+    function br() {
+      const div = document.createElement("div");
+      div.className = "separator";
+      output.appendChild(div);
+    }
+
+    function markHasOutput() {
+      if (!terminal.classList.contains("has-output")) terminal.classList.add("has-output");
+    }
+
+    function esc(s) {
+      const d = document.createElement("div");
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    // Date formatting uses the active locale. The BCP-47 tag we pass to
+    // toLocaleDateString is derived from LOCALE: 'en' → 'en-US', 'es' → 'es-AR'
+    // (since Argentine Spanish is the copy style we optimize for), 'pt' →
+    // 'pt-BR'. Month abbreviations flow from there automatically.
+    const _DATE_LOCALE = LOCALE === "en" ? "en-US" : LOCALE === "pt" ? "pt-BR" : "es-AR";
+    function formatDate(start, end) {
+      if (!start) return t("event.meta.date_tbd");
+      const opts = { day: "numeric", month: "short", year: "numeric" };
+      const s = new Date(start + "T00:00:00").toLocaleDateString(_DATE_LOCALE, opts);
+      if (!end || start === end) return s;
+      const e = new Date(end + "T00:00:00").toLocaleDateString(_DATE_LOCALE, opts);
+      return s + " - " + e;
+    }
+
+    function openGoogleCalendar(h) {
+      if (!h.date_start) return;
+      const dtStart = h.date_start.replace(/-/g, "");
+      const endDate = h.date_end || h.date_start;
+      const endDt = new Date(endDate + "T00:00:00");
+      endDt.setDate(endDt.getDate() + 1);
+      const dtEnd = endDt.toISOString().slice(0, 10).replace(/-/g, "");
+
+      const params = new URLSearchParams({
+        action: "TEMPLATE",
+        text: h.name,
+        dates: dtStart + "/" + dtEnd,
+      });
+      const loc = h.location || h.city;
+      if (loc) params.set("location", loc);
+      var details = h.description || "";
+      if (h.url) details += (details ? "\n" : "") + h.url;
+      if (details) params.set("details", details);
+
+      window.open("https://calendar.google.com/calendar/render?" + params.toString(), "_blank");
+    }
+
+    // Store references for calendar button click handler
+    const _icsMap = {};
+
+    function printEvent(h) {
+      const meta = [
+        formatDate(h.date_start, h.date_end),
+        h.country,
+        h.city,
+        h.type,
+      ].filter(Boolean).join("  /  ");
+
+      const icsId = "ics-" + h.id;
+      _icsMap[icsId] = h;
+
+      let html = '<div class="event-block">';
+      html += '<div class="bold">&gt; ' + esc(h.name) + '</div>';
+      html += '<div class="muted">' + esc(meta) + '</div>';
+      if (h.location) html += '<div class="muted">' + esc(h.location) + '</div>';
+      if (h.tags && h.tags.length) html += '<div class="muted">' + h.tags.map(t => '[' + esc(t) + ']').join(' ') + '</div>';
+      if (h.description) html += '<div>' + esc(h.description) + '</div>';
+
+      let actionsHtml = '';
+      if (h.url) actionsHtml += '<a class="link" href="' + esc(h.url) + '" target="_blank" rel="noopener">' + esc(h.url) + '</a>';
+      if (h.date_start) {
+        if (actionsHtml) actionsHtml += '  ';
+        actionsHtml += '<button class="cal-btn" data-ics="' + icsId + '">' + t("event.action.calendar") + '</button>';
+      }
+      if (actionsHtml) actionsHtml += '  ';
+      actionsHtml += '<button class="share-btn" data-id="' + h.id + '">' + t("event.action.share") + '</button>';
+      html += '<div class="event-actions">' + actionsHtml + '</div>';
+
+      html += '</div>';
+      print(html);
+    }
+
+    function lockInput() { isTyping = true; cmdInput.disabled = true; }
+    function unlockInput(preventScroll) { isTyping = false; cmdInput.disabled = false; cmdInput.focus({ preventScroll: !!preventScroll }); }
+
+    // --- Commands ---
+
+    async function cmdHelp() {
+      await typePrint([
+        '<span class="bold">' + t("help.header") + '</span>',
+        '',
+        t("help.line.list"),
+        t("help.line.list_country"),
+        t("help.line.list_city"),
+        t("help.line.list_type"),
+        t("help.line.list_tag"),
+        t("help.line.list_legacy"),
+        t("help.line.submit"),
+        t("help.line.lfg"),
+        t("help.line.lfg_hackathon"),
+        t("help.line.lfg_post"),
+        t("help.line.theme"),
+        t("help.line.theme_set"),
+        t("help.line.lang"),
+        t("help.line.lang_set"),
+        t("help.line.clear"),
+        t("help.line.about"),
+        t("help.line.help"),
+      ].join('\n'), null, 4);
+    }
+
+    async function cmdList(args) {
+      await dataReady;
+      const now = new Date().toISOString().slice(0, 10);
+      // Only show events that haven't started yet — list is the upcoming
+      // queue, in-progress and past events live in `historico`.
+      let results = HACKATHONS.filter(h => {
+        return !h.date_start || h.date_start > now;
+      });
+      const country = extractFlag(args, "--country");
+      const city = extractFlag(args, "--city");
+      const typeArg = extractFlag(args, "--type");
+      const tag = extractFlag(args, "--tag");
+
+      if (country) {
+        results = results.filter(h =>
+          (h.country || "").toLowerCase().includes(country.toLowerCase())
+        );
+      }
+      if (city) {
+        results = results.filter(h =>
+          (h.city || "").toLowerCase().includes(city.toLowerCase())
+        );
+      }
+      if (typeArg) {
+        results = results.filter(h =>
+          (h.type || "").toLowerCase() === typeArg.toLowerCase()
+        );
+      }
+      if (tag) {
+        // Shadowing-safe: the outer i18n helper is also named `t`, so we
+        // use `tagVal` here to avoid clobbering it inside the closure.
+        results = results.filter(h =>
+          h.tags.some(tagVal => tagVal.toLowerCase().includes(tag.toLowerCase()))
+        );
+      }
+
+      if (results.length === 0) {
+        await typePrint(t("list.no_results"), "muted", 12);
+        return;
+      }
+
+      // Mark where this output starts so we can scroll to it
+      const listAnchor = document.createElement("div");
+      output.appendChild(listAnchor);
+
+      await typePrint(
+        t("list.count_future", { count: results.length }),
+        "muted", 20
+      );
+      br();
+
+      // Suppress auto-scroll while rendering events
+      suppressAutoScroll = true;
+
+      // Reveal events progressively with staggered delay
+      for (let i = 0; i < results.length; i++) {
+        printEvent(results[i]);
+        const lastChild = output.lastElementChild;
+        if (lastChild) {
+          lastChild.style.opacity = "0";
+          lastChild.style.transition = "opacity 0.25s ease-in";
+        }
+        await new Promise(r => setTimeout(r, 60));
+        if (lastChild) lastChild.style.opacity = "1";
+      }
+
+      suppressAutoScroll = false;
+
+      // Scroll to the beginning of the list, not the bottom
+      listAnchor.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    async function cmdHistorico(args) {
+      await dataReady;
+      const now = new Date().toISOString().slice(0, 10);
+      // Anything that already started — in-progress events live here too,
+      // mirror of cmdList which only shows future events.
+      let results = HACKATHONS.filter(h => {
+        return h.date_start && h.date_start <= now;
+      });
+
+      const country = extractFlag(args, "--country");
+      const city = extractFlag(args, "--city");
+      if (country) results = results.filter(h => (h.country || "").toLowerCase().includes(country.toLowerCase()));
+      if (city) results = results.filter(h => (h.city || "").toLowerCase().includes(city.toLowerCase()));
+
+      // Sort most recent first
+      results.sort((a, b) => {
+        const da = a.date_start || "0000";
+        const db = b.date_start || "0000";
+        return db.localeCompare(da);
+      });
+
+      if (results.length === 0) {
+        await typePrint(t("list.no_past"), "muted", 12);
+        return;
+      }
+
+      const listAnchor = document.createElement("div");
+      output.appendChild(listAnchor);
+
+      await typePrint(
+        t("list.count_past", { count: results.length }),
+        "muted", 20
+      );
+      br();
+
+      suppressAutoScroll = true;
+      for (let i = 0; i < results.length; i++) {
+        printEvent(results[i]);
+        const lastChild = output.lastElementChild;
+        if (lastChild) {
+          lastChild.style.opacity = "0";
+          lastChild.style.transition = "opacity 0.25s ease-in";
+        }
+        await new Promise(r => setTimeout(r, 60));
+        if (lastChild) lastChild.style.opacity = "1";
+      }
+      suppressAutoScroll = false;
+      listAnchor.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    async function cmdAbout() {
+      await typePrint([
+        t("about.version_line"),
+        '',
+        t("about.tagline"),
+        t("about.sources"),
+        '',
+        t("about.repo"),
+        '',
+        t("about.footer"),
+      ].join('\n'), null, 8);
+    }
+
+    function cmdClear() {
+      output.innerHTML = "";
+      terminal.classList.remove("has-output");
+    }
+
+    // --- Theme ---
+    // `theme` alone toggles; `theme dark` / `theme light` sets explicitly.
+    // Persists to localStorage; the inline script in BaseLayout applies it
+    // on the next load before first paint so there's no theme flash. The
+    // shader in the corner adapts via a CSS `filter: invert(1)` on its
+    // canvas under [data-theme="dark"], so switching live while the intro
+    // is still settled on-screen flips it instantly with no rebuild.
+    async function cmdTheme(args) {
+      const root = document.documentElement;
+      const current = root.dataset.theme === "dark" ? "dark" : "light";
+      let target;
+
+      if (args.length === 0) {
+        target = current === "dark" ? "light" : "dark";
+      } else {
+        const arg = args[0].toLowerCase();
+        if (arg === "toggle") {
+          target = current === "dark" ? "light" : "dark";
+        } else if (arg === "dark" || arg === "light") {
+          target = arg;
+        } else {
+          await typePrint(t("theme.invalid"), "muted", 12);
+          return;
+        }
+      }
+
+      // Fire the chime synchronously, BEFORE any await, so the call lives
+      // inside the Enter keydown / quick-cmd click gesture stack. The helper
+      // lazy-loads tone.js on first call and sticky activation from the
+      // gesture keeps AudioContext.resume authorized even after the dynamic
+      // import resolves in a later microtask.
+      if (typeof window.__playThemeChime === "function") {
+        window.__playThemeChime(target);
+      }
+
+      // Kick off the canvas fade-out-in animation (see `theme-canvas-flip`
+      // in global.css). The animation hides the corner shader while its
+      // `filter: invert()` snaps to the new state at 0.32s, so the user
+      // never sees the gray midpoint. Removing + reflowing + re-adding
+      // the class restarts the animation cleanly on rapid toggles.
+      if (themeFlipTimeout) clearTimeout(themeFlipTimeout);
+      document.body.classList.remove("theme-flipping");
+      void document.body.offsetWidth;
+      document.body.classList.add("theme-flipping");
+      themeFlipTimeout = setTimeout(function () {
+        document.body.classList.remove("theme-flipping");
+        themeFlipTimeout = null;
+      }, 820);
+
+      root.dataset.theme = target;
+      try { localStorage.setItem("theme", target); } catch (e) {}
+
+      await typePrint(t("theme.set", { target: target }), "muted", 12);
+    }
+
+    // --- Lang ---
+    // `lang` alone prints the active locale and the list of available ones.
+    // `lang <en|es|pt>` persists the choice to localStorage and redirects
+    // to the matching URL prefix. The BaseLayout inline script applies any
+    // persisted preference on the next load before first paint, so there's
+    // no flash of the wrong language on a hard reload. Hash + query are
+    // preserved across the redirect so `?h=<id>` deep links keep working.
+    async function cmdLang(args) {
+      if (args.length === 0) {
+        await typePrint(t("lang.current", { current: LOCALE }), "muted", 12);
+        br();
+        await typePrint(t("lang.available_header"), "muted", 10);
+        await typePrint(t("lang.option.en"), null, 6);
+        await typePrint(t("lang.option.es"), null, 6);
+        await typePrint(t("lang.option.pt"), null, 6);
+        return;
+      }
+      const arg = args[0].toLowerCase();
+      if (arg !== "en" && arg !== "es" && arg !== "pt") {
+        await typePrint(t("lang.invalid"), "muted", 12);
+        return;
+      }
+      try { localStorage.setItem("lang", arg); } catch (e) {}
+      if (arg === LOCALE) {
+        await typePrint(t("lang.current", { current: LOCALE }), "muted", 12);
+        return;
+      }
+      await typePrint(t("lang.set", { target: arg }), "muted", 12);
+      const newPath = arg === "en" ? "/" : "/" + arg + "/";
+      setTimeout(function () {
+        window.location.href = newPath + window.location.search + window.location.hash;
+      }, 450);
+    }
+
+    // --- LFG ---
+
+    function printLfgPost(p) {
+      let html = '<div class="event-block">';
+      html += '<div class="bold">&gt; @' + esc(p.handle) + '</div>';
+      if (p.skills.length) html += '<div class="muted">' + p.skills.map(function(s) { return '[' + esc(s) + ']'; }).join(' ') + '</div>';
+      html += '<div class="muted">' + esc(t("lfg.card.hackathon_line", { value: p.hackathon })) + '</div>';
+      html += '<div class="muted">' + esc(t("lfg.card.contact_line", { value: p.contact })) + '</div>';
+      if (p.message) html += '<div>"' + esc(p.message) + '"</div>';
+      html += '</div>';
+      print(html);
+    }
+
+    async function cmdLfg(args) {
+      if (args.includes("--post")) {
+        await startLfgPost();
+        return;
+      }
+
+      await dataReady;
+      const hackathonFilter = extractFlag(args, "--hackathon");
+      let results = LFG_POSTS;
+
+      if (hackathonFilter) {
+        results = results.filter(function(p) {
+          return p.hackathon.toLowerCase().includes(hackathonFilter.toLowerCase());
+        });
+      }
+
+      if (results.length === 0) {
+        await typePrint(hackathonFilter ? t("lfg.none_filtered") : t("lfg.none"), "muted", 12);
+        await typePrint(t("lfg.hint_post"), "muted", 10);
+        return;
+      }
+
+      var listAnchor = document.createElement("div");
+      output.appendChild(listAnchor);
+
+      await typePrint(
+        t("lfg.count_searching", { count: results.length }),
+        "muted", 20
+      );
+      br();
+
+      suppressAutoScroll = true;
+      for (var i = 0; i < results.length; i++) {
+        printLfgPost(results[i]);
+        var lastChild = output.lastElementChild;
+        if (lastChild) {
+          lastChild.style.opacity = "0";
+          lastChild.style.transition = "opacity 0.25s ease-in";
+        }
+        await new Promise(function(r) { setTimeout(r, 60); });
+        if (lastChild) lastChild.style.opacity = "1";
+      }
+      suppressAutoScroll = false;
+
+      br();
+      print('<span class="muted">' + t("lfg.hint_post") + '</span>');
+
+      listAnchor.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    // --- LFG post flow (inline multi-step form) ---
+
+    var lfgState = null;
+
+    function showHackathonOptions() {
+      var hackathonNames = HACKATHONS.map(function(h) { return h.name; });
+      // Deduplicate
+      var seen = {};
+      var unique = [];
+      for (var i = 0; i < hackathonNames.length; i++) {
+        if (!seen[hackathonNames[i]]) {
+          seen[hackathonNames[i]] = true;
+          unique.push(hackathonNames[i]);
+        }
+      }
+      print('<span class="muted">' + t("lfg.options.hackathons_header") + '</span>');
+      for (var j = 0; j < unique.length; j++) {
+        print('  <span class="bold">' + String(j + 1).padStart(2, ' ') + '</span>  ' + esc(unique[j]));
+      }
+      print('  <span class="bold">' + String(unique.length + 1).padStart(2, ' ') + '</span>  ' + esc(t("lfg.options.other")));
+      br();
+      lfgState._hackathonList = unique;
+    }
+
+    function validateLfgHandle(v) {
+      if (!v.trim()) return t("validate.required");
+      if (v.trim().length > 60) return t("validate.max_chars", { max: 60 });
+      return null;
+    }
+
+    function validateLfgSkills(v) {
+      if (!v.trim()) return t("validate.required");
+      if (v.trim().length > 200) return t("validate.max_chars", { max: 200 });
+      return null;
+    }
+
+    function validateLfgHackathon(v) {
+      if (!v.trim()) return t("validate.required");
+      var list = lfgState._hackathonList || [];
+      var num = parseInt(v.trim());
+      if (num === list.length + 1) {
+        // "otro" selected — next step will ask for free text
+        return null;
+      }
+      if (!isNaN(num) && (num < 1 || num > list.length + 1)) {
+        return t("validate.option_range", { max: list.length + 1 });
+      }
+      // Allow free text directly too
+      return null;
+    }
+
+    function validateLfgContact(v) {
+      if (!v.trim()) return t("validate.required");
+      if (v.trim().length > 120) return t("validate.max_chars", { max: 120 });
+      return null;
+    }
+
+    var LFG_STEPS = [
+      { key: "handle", prompt: t("lfg.step.handle_prompt"), validate: validateLfgHandle },
+      { key: "skills", prompt: t("lfg.step.skills_prompt"), validate: validateLfgSkills },
+      { key: "hackathon", prompt: t("lfg.step.hackathon_prompt"), validate: validateLfgHackathon, beforePrompt: showHackathonOptions },
+      { key: "contact", prompt: t("lfg.step.contact_prompt"), validate: validateLfgContact },
+      { key: "message", prompt: t("lfg.step.message_prompt"), validate: null },
+    ];
+
+    async function startLfgPost() {
+      await dataReady;
+      lfgState = { step: 0, data: {}, _hackathonList: [] };
+      await typePrint(t("lfg.start_heading"), "muted", 8);
+      await typePrint(t("lfg.contact_warning"), "muted", 8);
+      br();
+      var step = LFG_STEPS[0];
+      if (step.beforePrompt) step.beforePrompt();
+      setLfgPrompt();
+    }
+
+    function setLfgPrompt() {
+      var step = LFG_STEPS[lfgState.step];
+      var promptEl = inputLine.querySelector(".prompt");
+      promptEl.innerHTML = '<span class="step-prompt">' + step.prompt + '</span>';
+    }
+
+    async function handleLfgStep(value) {
+      var step = LFG_STEPS[lfgState.step];
+
+      if (value.toLowerCase() === "cancel") {
+        printRaw(step.prompt + value);
+        await typePrint(t("lfg.cancelled"), "muted", 15);
+        lfgState = null;
+        resetPrompt();
+        return;
+      }
+
+      if (step.validate) {
+        var error = step.validate(value);
+        if (error) {
+          await typePrint(error, "muted", 12);
+          return;
+        }
+      }
+
+      printRaw(step.prompt + value);
+
+      var finalValue = value.trim();
+
+      // Resolve hackathon selection
+      if (step.key === "hackathon" && finalValue) {
+        var list = lfgState._hackathonList || [];
+        var num = parseInt(finalValue);
+        if (!isNaN(num) && num >= 1 && num <= list.length) {
+          finalValue = list[num - 1];
+        } else if (!isNaN(num) && num === list.length + 1) {
+          // "other" — need to ask for free text
+          lfgState.data[step.key] = "__other";
+          lfgState.step++;
+          // Insert a temporary step for free text hackathon name
+          var promptEl = inputLine.querySelector(".prompt");
+          promptEl.innerHTML = '<span class="step-prompt">' + t("lfg.step.hackathon_name_prompt") + '</span>';
+          lfgState._awaitingCustomHackathon = true;
+          return;
+        }
+      }
+
+      lfgState.data[step.key] = finalValue;
+      lfgState.step++;
+
+      if (lfgState.step >= LFG_STEPS.length) {
+        await finishLfgPost();
+        return;
+      }
+
+      var nextStep = LFG_STEPS[lfgState.step];
+      if (nextStep.beforePrompt) nextStep.beforePrompt();
+      setLfgPrompt();
+    }
+
+    async function finishLfgPost() {
+      var d = lfgState.data;
+      var handle = (d.handle || "").replace(/^@/, "");
+      br();
+      await typePrint(t("lfg.summary_heading"), "bold", 15);
+      printRaw(t("lfg.summary.handle", { value: handle }));
+      printRaw(t("lfg.summary.skills", { value: d.skills }));
+      printRaw(t("lfg.summary.hackathon", { value: d.hackathon }));
+      printRaw(t("lfg.summary.contact", { value: d.contact }));
+      if (d.message) printRaw(t("lfg.summary.message", { value: d.message }));
+      br();
+
+      // Issue body is always in English regardless of the user's locale.
+      // Every submission lands in a single repo under one maintainer, so
+      // keeping the payload in English makes triage consistent and avoids
+      // ambiguity in the markdown labels.
+      var body = [
+        "## @" + handle, "",
+        "- **Handle**: " + handle,
+        "- **Skills**: " + d.skills,
+        "- **Hackathon**: " + d.hackathon,
+        "- **Contact**: " + d.contact,
+        d.message ? "- **Message**: " + d.message : "",
+      ].filter(Boolean).join("\n");
+
+      var issueUrl = "https://github.com/ainponce/hackathones/issues/new?title=" +
+        encodeURIComponent("[lfg] @" + handle) +
+        "&body=" + encodeURIComponent(body) +
+        "&labels=lfg-post";
+
+      await typePrint(t("lfg.github_opening", { url: esc(issueUrl) }), null, 10);
+      window.open(issueUrl, "_blank");
+      br();
+      await typePrint(t("lfg.post_created"), "muted", 15);
+
+      lfgState = null;
+      resetPrompt();
+    }
+
+    // --- Validators ---
+
+    const COUNTRIES_LIST = [
+      "Global",
+      "Argentina", "Brasil", "Chile", "Colombia", "Mexico",
+      "Peru", "Uruguay", "Paraguay", "Ecuador", "Bolivia",
+      "Venezuela", "Costa Rica", "Panama", "Guatemala",
+      "USA", "Canada",
+    ];
+
+    const CITIES_BY_COUNTRY = {
+      "Argentina": ["Buenos Aires", "Cordoba", "Rosario", "Mendoza", "La Plata", "Tucuman", "Mar del Plata", "Bariloche", "Santa Fe", "Salta"],
+      "Brasil": ["Sao Paulo", "Rio de Janeiro", "Brasilia", "Belo Horizonte", "Curitiba", "Porto Alegre", "Florianopolis", "Recife", "Salvador"],
+      "Chile": ["Santiago", "Valparaiso", "Concepcion"],
+      "Colombia": ["Bogota", "Medellin", "Cali", "Barranquilla", "Cartagena"],
+      "Mexico": ["Ciudad de Mexico", "Guadalajara", "Monterrey", "Puebla", "Cancun", "Queretaro"],
+      "Peru": ["Lima", "Arequipa", "Cusco"],
+      "Uruguay": ["Montevideo"],
+      "Paraguay": ["Asuncion"],
+      "Ecuador": ["Quito", "Guayaquil"],
+      "Bolivia": ["La Paz", "Santa Cruz"],
+      "Venezuela": ["Caracas"],
+      "Costa Rica": ["San Jose"],
+      "Panama": ["Ciudad de Panama"],
+      "Guatemala": ["Ciudad de Guatemala"],
+      "USA": ["Miami", "New York", "San Francisco", "Los Angeles", "Austin", "Chicago", "Denver", "Boston"],
+      "Canada": ["Toronto", "Vancouver", "Montreal"],
+    };
+
+    function validateName(v) {
+      if (!v.trim()) return t("validate.required");
+      if (v.trim().length > 100) return t("validate.max_chars_count", { max: 100, current: v.trim().length });
+      return null;
+    }
+
+    function validateDate(v, opts) {
+      if (opts.required && !v.trim()) return t("validate.required");
+      if (!v.trim()) return null;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(v.trim())) return t("validate.date_format");
+      const d = new Date(v.trim() + "T00:00:00");
+      if (isNaN(d.getTime())) return t("validate.date_invalid");
+      const today = new Date(); today.setHours(0,0,0,0);
+      if (d < today) return t("validate.date_past");
+      if (opts.after) {
+        const ref = new Date(opts.after + "T00:00:00");
+        if (d < ref) return t("validate.date_end_before_start", { start: opts.after });
+      }
+      return null;
+    }
+
+    function validateCountry(v) {
+      if (!v.trim()) return t("validate.required");
+      const num = parseInt(v.trim());
+      if (isNaN(num) || num < 1 || num > COUNTRIES_LIST.length) {
+        return t("validate.option_range", { max: COUNTRIES_LIST.length });
+      }
+      return null;
+    }
+
+    function validateCity(v) {
+      if (!v.trim()) return null; // optional if no cities for country
+      const cities = CITIES_BY_COUNTRY[submitState.data.country] || [];
+      if (cities.length === 0) return null;
+      const num = parseInt(v.trim());
+      if (isNaN(num) || num < 1 || num > cities.length) {
+        return t("validate.option_range", { max: cities.length });
+      }
+      return null;
+    }
+
+    function validateType(v) {
+      const num = parseInt(v.trim());
+      if (isNaN(num) || num < 1 || num > 3) return t("validate.option_1_to_3");
+      return null;
+    }
+
+    function validateUrl(v) {
+      if (!v.trim()) return t("validate.required");
+      try {
+        const url = new URL(v.trim());
+        if (!["http:", "https:"].includes(url.protocol)) return t("validate.url_protocol");
+        return null;
+      } catch { return t("validate.url_invalid"); }
+    }
+
+    function validateDescription(v) {
+      if (!v.trim()) return t("validate.required");
+      if (v.trim().length > 500) return t("validate.max_chars_count", { max: 500, current: v.trim().length });
+      return null;
+    }
+
+    // --- Submit flow ---
+
+    // TYPE_OPTIONS holds the canonical DB values (never localized). The
+    // labels shown to the user are resolved via t("submit.type.<value>"),
+    // so English/Portuguese users see "in-person / online / hybrid" while
+    // the row written to Supabase still uses the Spanish enum.
+    const TYPE_OPTIONS = ["presencial", "online", "hibrido"];
+
+    function showCountryOptions() {
+      print('<span class="muted">' + t("submit.options.countries_header") + '</span>');
+      COUNTRIES_LIST.forEach((c, i) => {
+        print('  <span class="bold">' + String(i + 1).padStart(2, ' ') + '</span>  ' + c);
+      });
+      br();
+    }
+
+    function showCityOptions() {
+      const cities = CITIES_BY_COUNTRY[submitState.data.country] || [];
+      if (cities.length === 0) return;
+      print('<span class="muted">' + t("submit.options.cities_header", { country: esc(submitState.data.country) }) + '</span>');
+      cities.forEach((c, i) => {
+        print('  <span class="bold">' + String(i + 1).padStart(2, ' ') + '</span>  ' + c);
+      });
+      br();
+    }
+
+    function showTypeOptions() {
+      print('<span class="muted">' + t("submit.options.type_header") + '</span>');
+      TYPE_OPTIONS.forEach((l, i) => {
+        print('  <span class="bold">' + (i + 1) + '</span>  ' + esc(t("submit.type." + l)));
+      });
+      br();
+    }
+
+    const SUBMIT_STEPS = [
+      { key: "name", prompt: t("submit.step.name_prompt"), validate: validateName },
+      { key: "date_start", prompt: t("submit.step.date_start_prompt"), validate: (v) => validateDate(v, { required: true }) },
+      { key: "date_end", prompt: t("submit.step.date_end_prompt"), validate: null },
+      { key: "country", prompt: t("submit.step.country_prompt"), validate: validateCountry, beforePrompt: showCountryOptions },
+      { key: "city", prompt: t("submit.step.city_prompt"), validate: validateCity, beforePrompt: showCityOptions },
+      { key: "type", prompt: t("submit.step.type_prompt"), validate: validateType, beforePrompt: showTypeOptions },
+      { key: "location", prompt: t("submit.step.location_prompt"), validate: null },
+      { key: "url", prompt: t("submit.step.url_prompt"), validate: validateUrl },
+      { key: "tags", prompt: t("submit.step.tags_prompt"), validate: null },
+      { key: "description", prompt: t("submit.step.description_prompt"), validate: validateDescription },
+    ];
+
+    async function startSubmit() {
+      submitState = { step: 0, data: {} };
+      await typePrint(t("submit.start"), "muted", 8);
+      br();
+      const step = SUBMIT_STEPS[0];
+      if (step.beforePrompt) step.beforePrompt();
+      setStepPrompt();
+    }
+
+    function setStepPrompt() {
+      const step = SUBMIT_STEPS[submitState.step];
+      const promptEl = inputLine.querySelector(".prompt");
+      promptEl.innerHTML = '<span class="step-prompt">' + step.prompt + '</span>';
+    }
+
+    function resetPrompt() {
+      const promptEl = inputLine.querySelector(".prompt");
+      promptEl.innerHTML = "$&nbsp;";
+    }
+
+    async function handleSubmitStep(value) {
+      const step = SUBMIT_STEPS[submitState.step];
+
+      if (value.toLowerCase() === "cancel") {
+        printRaw(step.prompt + value);
+        await typePrint(t("submit.cancelled"), "muted", 15);
+        submitState = null;
+        resetPrompt();
+        return;
+      }
+
+      if (step.validate) {
+        let error;
+        if (step.key === "date_end" && value.trim()) {
+          error = validateDate(value, { required: false, after: submitState.data.date_start });
+        } else {
+          error = step.validate(value);
+        }
+        if (error) {
+          await typePrint(error, "muted", 12);
+          return;
+        }
+      }
+
+      printRaw(step.prompt + value);
+
+      let finalValue = value.trim();
+      if (step.key === "country" && finalValue) {
+        const idx = parseInt(finalValue) - 1;
+        if (idx >= 0 && idx < COUNTRIES_LIST.length) finalValue = COUNTRIES_LIST[idx];
+      }
+      if (step.key === "city" && finalValue) {
+        const cities = CITIES_BY_COUNTRY[submitState.data.country] || [];
+        const idx = parseInt(finalValue) - 1;
+        if (idx >= 0 && idx < cities.length) finalValue = cities[idx];
+      }
+      if (step.key === "type" && finalValue) {
+        const idx = parseInt(finalValue) - 1;
+        if (idx >= 0 && idx < TYPE_OPTIONS.length) finalValue = TYPE_OPTIONS[idx];
+      }
+
+      submitState.data[step.key] = finalValue;
+      submitState.step++;
+
+      // Skip city step if country has no city list and user can't select
+      if (submitState.step < SUBMIT_STEPS.length) {
+        const nextStep = SUBMIT_STEPS[submitState.step];
+        if (nextStep.key === "city") {
+          const cities = CITIES_BY_COUNTRY[submitState.data.country] || [];
+          if (cities.length === 0) {
+            submitState.data.city = "";
+            submitState.step++;
+          }
+        }
+      }
+
+      if (submitState.step >= SUBMIT_STEPS.length) {
+        await finishSubmit();
+        return;
+      }
+
+      const nextStep = SUBMIT_STEPS[submitState.step];
+      if (nextStep.beforePrompt) nextStep.beforePrompt();
+      setStepPrompt();
+    }
+
+    async function finishSubmit() {
+      const d = submitState.data;
+      br();
+      await typePrint(t("submit.summary_heading"), "bold", 15);
+      Object.entries(d).forEach(([k, v]) => {
+        if (v) printRaw("  " + k + ": " + v);
+      });
+      br();
+
+      // Issue body stays in English regardless of locale — all submissions
+      // flow into one maintainer's triage queue, so consistent labels win.
+      const body = [
+        "## " + d.name, "",
+        "- **Date**: " + d.date_start + (d.date_end ? " - " + d.date_end : ""),
+        d.country ? "- **Country**: " + d.country : "",
+        d.city ? "- **City**: " + d.city : "",
+        d.type ? "- **Type**: " + d.type : "",
+        d.location ? "- **Venue**: " + d.location : "",
+        d.url ? "- **URL**: " + d.url : "",
+        d.tags ? "- **Tags**: " + d.tags : "",
+        d.description ? "\n### Description\n" + d.description : "",
+      ].filter(Boolean).join("\n");
+
+      const issueUrl = "https://github.com/ainponce/hackathones/issues/new?title=" +
+        encodeURIComponent("[hackathon] " + d.name) +
+        "&body=" + encodeURIComponent(body) +
+        "&labels=hackathon-submission";
+
+      await typePrint(t("submit.github_opening", { url: esc(issueUrl) }), null, 10);
+      window.open(issueUrl, "_blank");
+      br();
+      await typePrint(t("submit.thanks"), "muted", 15);
+
+      submitState = null;
+      resetPrompt();
+    }
+
+    // --- Parser ---
+
+    function extractFlag(args, flag) {
+      const idx = args.indexOf(flag);
+      if (idx === -1) return null;
+      // Collect all words after the flag until next flag or end
+      const rest = [];
+      for (let i = idx + 1; i < args.length; i++) {
+        if (args[i].startsWith("--")) break;
+        rest.push(args[i]);
+      }
+      return rest.join(" ").trim() || null;
+    }
+
+    async function handleCommand(raw) {
+      const trimmed = raw.trim();
+
+      if (submitState !== null) {
+        lockInput();
+        await handleSubmitStep(trimmed);
+        unlockInput();
+        return;
+      }
+
+      if (lfgState !== null) {
+        lockInput();
+        if (lfgState._awaitingCustomHackathon) {
+          if (!trimmed) {
+            await typePrint(t("validate.required"), "muted", 12);
+          } else {
+            printRaw(t("lfg.step.hackathon_name_prompt") + trimmed);
+            lfgState.data.hackathon = trimmed;
+            lfgState._awaitingCustomHackathon = false;
+            lfgState.step++;  // move past hackathon step
+            if (lfgState.step >= LFG_STEPS.length) {
+              await finishLfgPost();
+            } else {
+              var nextStep = LFG_STEPS[lfgState.step];
+              if (nextStep.beforePrompt) nextStep.beforePrompt();
+              setLfgPrompt();
+            }
+          }
+        } else {
+          await handleLfgStep(trimmed);
+        }
+        unlockInput();
+        return;
+      }
+
+      if (!trimmed) return;
+
+      printRaw("$ " + trimmed, "bold");
+      br();
+
+      history.push(trimmed);
+      historyIndex = history.length;
+
+      const parts = trimmed.split(/\s+/);
+      const cmd = parts[0].toLowerCase().replace(/^\//, "");
+      const args = parts.slice(1);
+
+      lockInput();
+
+      let scrollHandled = false;
+      switch (cmd) {
+        case "help": await cmdHelp(); break;
+        case "list": case "ls":
+          if (args.includes("--legacy")) { await cmdHistorico(args.filter(a => a !== "--legacy")); }
+          else { await cmdList(args); }
+          scrollHandled = true;
+          break;
+        case "submit": await startSubmit(); break;
+        case "lfg": await cmdLfg(args); scrollHandled = true; break;
+        case "theme": await cmdTheme(args); break;
+        case "lang": await cmdLang(args); break;
+        case "clear": case "cls": cmdClear(); break;
+        case "about": await cmdAbout(); break;
+        default:
+          await typePrint(t("cmd.error.unknown", { cmd: esc(cmd) }), "muted", 15);
+          await typePrint(t("cmd.error.hint"), "muted", 10);
+      }
+      br();
+      unlockInput(scrollHandled);
+    }
+
+    // --- Autocomplete ---
+    const COMMANDS = ["help", "list", "submit", "lfg", "theme", "lang", "clear", "about"];
+    const FLAGS = ["--country", "--city", "--type", "--tag", "--legacy", "--hackathon", "--post"];
+    const THEME_OPTS = ["dark", "light"];
+    const LANG_OPTS = ["en", "es", "pt"];
+    let suggestion = "";
+
+    function getSuggestion(input) {
+      if (!input || submitState !== null || lfgState !== null) return "";
+      const parts = input.split(/\s+/);
+      const last = parts[parts.length - 1].toLowerCase();
+      if (!last) return "";
+      if (parts.length === 1) {
+        const match = COMMANDS.find(c => c.startsWith(last) && c !== last);
+        return match ? match.slice(last.length) : "";
+      }
+      const cmd0 = parts[0].toLowerCase();
+      if ((cmd0 === "list" || cmd0 === "lfg") && last.startsWith("-")) {
+        const match = FLAGS.find(f => f.startsWith(last) && f !== last);
+        return match ? match.slice(last.length) : "";
+      }
+      if (cmd0 === "theme" && parts.length === 2 && !last.startsWith("-")) {
+        // Shadow-safe: outer `t` is the i18n helper, so we name the local
+        // arg `opt` inside the closure.
+        const match = THEME_OPTS.find(opt => opt.startsWith(last) && opt !== last);
+        return match ? match.slice(last.length) : "";
+      }
+      if (cmd0 === "lang" && parts.length === 2 && !last.startsWith("-")) {
+        const match = LANG_OPTS.find(opt => opt.startsWith(last) && opt !== last);
+        return match ? match.slice(last.length) : "";
+      }
+      return "";
+    }
+
+    const ghostMirror = document.getElementById("ghost-mirror");
+
+    function updateSuggestion() {
+      suggestion = getSuggestion(cmdInput.value);
+      document.getElementById("autocomplete-ghost").textContent = suggestion;
+      ghostMirror.textContent = cmdInput.value;
+    }
+
+    function autoResize() {
+      cmdInput.style.height = "auto";
+      cmdInput.style.height = cmdInput.scrollHeight + "px";
+    }
+
+    cmdInput.addEventListener("input", () => { updateSuggestion(); autoResize(); });
+
+    cmdInput.addEventListener("keydown", (e) => {
+      if (e.key === "Tab") {
+        e.preventDefault();
+        if (suggestion) { cmdInput.value += suggestion; updateSuggestion(); }
+        return;
+      }
+      if (e.key === "c" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        if (submitState !== null) {
+          printRaw("^C");
+          typePrint(t("submit.cancelled"), "muted", 15);
+          submitState = null;
+          resetPrompt();
+          cmdInput.value = "";
+          unlockInput();
+        } else if (lfgState !== null) {
+          printRaw("^C");
+          typePrint(t("lfg.cancelled"), "muted", 15);
+          lfgState = null;
+          resetPrompt();
+          cmdInput.value = "";
+          unlockInput();
+        } else if (cmdInput.value) {
+          printRaw("$ " + cmdInput.value + "^C", "muted");
+          cmdInput.value = "";
+        }
+        updateSuggestion();
+        return;
+      }
+      if (isTyping) { e.preventDefault(); return; }
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        const val = cmdInput.value;
+        cmdInput.value = "";
+        cmdInput.style.height = "auto";
+        suggestion = "";
+        updateSuggestion();
+        handleCommand(val);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        if (historyIndex > 0) { historyIndex--; cmdInput.value = history[historyIndex]; updateSuggestion(); }
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        if (historyIndex < history.length - 1) { historyIndex++; cmdInput.value = history[historyIndex]; }
+        else { historyIndex = history.length; cmdInput.value = ""; }
+        updateSuggestion();
+      }
+    });
+
+    document.addEventListener("click", (e) => {
+      const calBtn = e.target.closest(".cal-btn");
+      if (calBtn) {
+        e.stopPropagation();
+        const h = _icsMap[calBtn.dataset.ics];
+        if (h) openGoogleCalendar(h);
+        return;
+      }
+      const shareBtn = e.target.closest(".share-btn");
+      if (shareBtn) {
+        e.stopPropagation();
+        const url = window.location.origin + window.location.pathname + "?h=" + encodeURIComponent(shareBtn.dataset.id);
+        navigator.clipboard.writeText(url).then(() => {
+          shareBtn.textContent = t("event.action.copied");
+          setTimeout(() => { shareBtn.textContent = t("event.action.share"); }, 1500);
+        });
+        return;
+      }
+      if (window.getSelection().toString()) return;
+      if (e.target.closest("a, button, .quick-cmds")) return;
+      if (!isTyping) cmdInput.focus({ preventScroll: true });
+    });
+
+    // --- Quick command buttons (mobile) ---
+    document.getElementById("quick-cmds").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-cmd]");
+      if (btn && !isTyping) {
+        handleCommand(btn.dataset.cmd);
+      }
+    });
+
+    // --- Animated placeholder ---
+    const phEl = document.getElementById("placeholder");
+    const PH_HINTS = [
+      t("placeholder.hint_1"),
+      t("placeholder.hint_2"),
+      t("placeholder.hint_3"),
+      t("placeholder.hint_4"),
+      t("placeholder.hint_5"),
+    ];
+    let phIndex = 0;
+    let phTimer = null;
+    let phActive = true;
+
+    function typePhrase(text, el, speed, cb) {
+      let i = 0; el.textContent = "";
+      function tick() {
+        if (i < text.length) { el.textContent += text[i++]; phTimer = setTimeout(tick, speed); }
+        else { phTimer = setTimeout(() => erasePhrase(el, speed * 0.5, cb), 2000); }
+      }
+      tick();
+    }
+
+    function erasePhrase(el, speed, cb) {
+      function tick() {
+        if (el.textContent.length > 0) { el.textContent = el.textContent.slice(0, -1); phTimer = setTimeout(tick, speed); }
+        else { phTimer = setTimeout(cb, 300); }
+      }
+      tick();
+    }
+
+    function cyclePlaceholder() {
+      if (!phActive) return;
+      typePhrase(PH_HINTS[phIndex], phEl, 40, () => { phIndex = (phIndex + 1) % PH_HINTS.length; cyclePlaceholder(); });
+    }
+
+    function stopPlaceholder() {
+      if (!phActive) return;
+      phActive = false;
+      if (phTimer) clearTimeout(phTimer);
+      phEl.style.display = "none";
+    }
+
+    cmdInput.addEventListener("input", stopPlaceholder, { once: true });
+    cyclePlaceholder();
+
+    // --- Deep link: show specific hackathon from ?h=<id> ---
+    const _urlParams = new URLSearchParams(window.location.search);
+    const _linkedId = _urlParams.get("h");
+    if (_linkedId) {
+      dataReady.then(function () {
+        const _target = HACKATHONS.find(h => h.id === _linkedId);
+        if (_target) {
+          stopPlaceholder();
+          lockInput();
+          markHasOutput();
+          printEvent(_target);
+          unlockInput(true);
+        }
+      });
+    }
+  </script>
+
+  <script>
+    // Theme chime — lazy-imports tone.js the first time `theme` is toggled,
+    // caches an FMSynth + reverb graph, and fires a short directional
+    // two-note chime (descending E5→A4 for dark, ascending A4→E5 for light)
+    // that finishes well within the 0.8s visual transition.
+    //
+    // Exposed on `window` so the inline define:vars script above can call
+    // it without sharing a module scope. The Enter keydown / quick-cmd
+    // click that triggers cmdTheme is a valid user gesture, and the sticky
+    // activation it sets keeps AudioContext.resume authorized even though
+    // the dynamic import() resolves in a microtask after the gesture has
+    // unwound.
+    //
+    // Not using `await Tone.start()` — see 5bbd7e2: awaiting it can hang
+    // indefinitely on real iOS Safari and lose user activation. Fire and
+    // forget is the supported pattern.
+    let themeAudio = null;
+    let themeAudioPromise = null;
+
+    async function buildThemeAudio() {
+      const Tone = await import("tone");
+      Tone.start().catch(function () {});
+      const reverb = new Tone.Reverb({ decay: 1.6, preDelay: 0.01, wet: 0.25 });
+      await reverb.ready;
+      reverb.toDestination();
+      const synth = new Tone.FMSynth({
+        harmonicity: 1.5,
+        modulationIndex: 3,
+        oscillator: { type: "sine" },
+        envelope: { attack: 0.005, decay: 0.35, sustain: 0, release: 0.3 },
+        modulation: { type: "sine" },
+        modulationEnvelope: { attack: 0.005, decay: 0.2, sustain: 0, release: 0.2 },
+      });
+      synth.volume.value = -15;
+      synth.connect(reverb);
+      return { Tone: Tone, synth: synth };
+    }
+
+    window.__playThemeChime = async function (target) {
+      try {
+        if (!themeAudio) {
+          if (!themeAudioPromise) themeAudioPromise = buildThemeAudio();
+          themeAudio = await themeAudioPromise;
+        }
+        const Tone = themeAudio.Tone;
+        const synth = themeAudio.synth;
+        // Dark: descending E5 → A4. Light: ascending A4 → E5.
+        const notes = target === "dark" ? ["E5", "A4"] : ["A4", "E5"];
+        const now = Tone.now();
+        synth.triggerAttackRelease(notes[0], "16n", now);
+        synth.triggerAttackRelease(notes[1], "8n", now + 0.12);
+      } catch (e) {
+        // Audio is non-critical garnish — swallow failures so the visual
+        // toggle always succeeds even if tone.js fails to load.
+      }
+    };
+  </script>
+</BaseLayout>
