@@ -82,6 +82,9 @@ const DEVPOST_HEADERS = {
 // runaway `total_count` can't starve the job or trigger rate limits.
 const DEVPOST_PER_PAGE = 40;
 const DEVPOST_MAX_PAGES = 10;
+
+// Same safety net for DoraHacks. page_size=200 × 10 = 2000 events/run.
+const DORAHACKS_MAX_PAGES = 10;
 // Delay between Devpost page fetches. Low enough to finish in a few seconds
 // for typical `total_count` (~100–200), high enough that the AWS ALB in
 // front of Devpost doesn't flag a burst as automated traffic.
@@ -185,6 +188,34 @@ function normalizeType(t) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isHttpUrl(str) {
+  if (!str || typeof str !== "string") return false;
+  try {
+    return ["http:", "https:"].includes(new URL(str).protocol);
+  } catch {
+    return false;
+  }
+}
+
+// Cap a tag/skill array: drop non-strings, truncate each item, and limit
+// overall count. Protects the DB from a compromised or misbehaving source
+// returning thousands of tags or multi-kilobyte strings.
+function capArray(arr, maxItems = 20, maxLen = 50) {
+  if (!Array.isArray(arr)) return [];
+  return arr
+    .filter((s) => typeof s === "string")
+    .map((s) => s.slice(0, maxLen))
+    .slice(0, maxItems);
+}
+
+function fetchWithTimeout(url, opts = {}, ms = 30000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), ms);
+  return fetch(url, { ...opts, signal: controller.signal }).finally(() =>
+    clearTimeout(id)
+  );
 }
 
 // Devpost returns `submission_period_dates` as a human-readable string in
@@ -316,7 +347,7 @@ async function fetchLumaEvents() {
   const results = await Promise.all(
     LUMA_SEED_SLUGS.map(async (slug) => {
       try {
-        const res = await fetch(`https://api.lu.ma/url?url=${slug}`);
+        const res = await fetchWithTimeout(`https://api.lu.ma/url?url=${slug}`);
         if (!res.ok) return null;
         const data = await res.json();
         const event = data?.data?.event;
@@ -358,18 +389,21 @@ async function fetchDoraHacksEvents() {
   const events = [];
   const pageSize = 200;
   try {
-    const firstRes = await fetch(
+    const firstRes = await fetchWithTimeout(
       `https://dorahacks.io/api/hackathon/?page=1&page_size=${pageSize}`,
       { headers: DORAHACKS_HEADERS }
     );
     if (!firstRes.ok) return events;
     const firstData = await firstRes.json();
-    const totalPages = Math.ceil((firstData.count || 0) / pageSize);
+    const totalPages = Math.min(
+      DORAHACKS_MAX_PAGES,
+      Math.max(1, Math.ceil((firstData.count || 0) / pageSize))
+    );
 
     const pagePromises = [Promise.resolve(firstData)];
     for (let page = 2; page <= totalPages; page++) {
       pagePromises.push(
-        fetch(
+        fetchWithTimeout(
           `https://dorahacks.io/api/hackathon/?page=${page}&page_size=${pageSize}`,
           { headers: DORAHACKS_HEADERS }
         )
@@ -402,9 +436,11 @@ async function fetchDoraHacksEvents() {
         .replace(/\n{2,}/g, " ")
         .trim()
         .slice(0, 300);
-      const tags = h.field
-        ? h.field.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean)
-        : [];
+      const tags = capArray(
+        h.field
+          ? h.field.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean)
+          : []
+      );
       events.push({
         slug: `dorahacks-${h.id}`,
         name: h.title,
@@ -445,7 +481,7 @@ async function fetchDevpostEvents() {
     const buildUrl = (page) =>
       `https://devpost.com/api/hackathons?status=upcoming&per_page=${DEVPOST_PER_PAGE}&page=${page}`;
 
-    const first = await fetch(buildUrl(1), { headers: DEVPOST_HEADERS });
+    const first = await fetchWithTimeout(buildUrl(1), { headers: DEVPOST_HEADERS });
     if (!first.ok) {
       console.warn(`[devpost] page 1 failed: ${first.status}`);
       return events;
@@ -463,7 +499,7 @@ async function fetchDevpostEvents() {
     for (let page = 2; page <= totalPages; page++) {
       await sleep(DEVPOST_PAGE_DELAY_MS);
       try {
-        const res = await fetch(buildUrl(page), { headers: DEVPOST_HEADERS });
+        const res = await fetchWithTimeout(buildUrl(page), { headers: DEVPOST_HEADERS });
         if (!res.ok) {
           console.warn(`[devpost] page ${page} failed: ${res.status}`);
           break;
@@ -509,11 +545,13 @@ async function fetchDevpostEvents() {
 
     const country = isOnline ? "Online" : extractDevpostCountry(locText);
 
-    const tags = Array.isArray(h.themes)
-      ? h.themes
-          .map((t) => (t?.name || "").toLowerCase().trim())
-          .filter(Boolean)
-      : [];
+    const tags = capArray(
+      Array.isArray(h.themes)
+        ? h.themes
+            .map((t) => (t?.name || "").toLowerCase().trim())
+            .filter(Boolean)
+        : []
+    );
 
     // Devpost wraps currency values in an HTML `<span>` like
     // `$<span data-currency-value>20,000</span>`. Strip tags for a clean
@@ -541,7 +579,7 @@ async function fetchDevpostEvents() {
       country,
       city: null,
       location: isOnline ? null : locText || null,
-      url: h.url || null,
+      url: isHttpUrl(h.url) ? h.url : null,
       source: "devpost",
       type,
       tags,
@@ -554,22 +592,39 @@ async function fetchDevpostEvents() {
 }
 
 async function fetchGitHubIssues() {
-  // Fetch once, parse both [hackathon] and [lfg] entries. Also track the
-  // slugs/source_keys we saw so the caller can soft-delete anything in DB
-  // that's no longer present (i.e. the issue was closed / deleted).
+  // Fetch all open issues, paginating via the Link header, then parse both
+  // [hackathon] and [lfg] entries. Also track the slugs/source_keys we saw
+  // so the caller can soft-delete anything in DB that's no longer present
+  // (i.e. the issue was closed / deleted).
+  //
+  // Cap at 10 pages (1000 issues) as a safety net — if the repo ever holds
+  // more than that, switch to a search-based API rather than paging the
+  // whole issue list.
+  const GITHUB_MAX_PAGES = 10;
   try {
-    const res = await fetch(
-      `https://api.github.com/repos/${GITHUB_REPO}/issues?state=open&per_page=100`,
-      { headers: GITHUB_HEADERS }
-    );
-    if (!res.ok)
-      return {
-        hackathons: [],
-        lfg: [],
-        seenHackSlugs: new Set(),
-        seenLfgSourceKeys: new Set(),
-      };
-    const issues = await res.json();
+    const allIssues = [];
+    let url =
+      `https://api.github.com/repos/${GITHUB_REPO}/issues?state=open&per_page=100`;
+    for (let page = 0; page < GITHUB_MAX_PAGES && url; page++) {
+      const res = await fetchWithTimeout(url, { headers: GITHUB_HEADERS });
+      if (!res.ok) {
+        return {
+          hackathons: [],
+          lfg: [],
+          seenHackSlugs: new Set(),
+          seenLfgSourceKeys: new Set(),
+          fetchSucceeded: false,
+        };
+      }
+      const pageIssues = await res.json();
+      if (!Array.isArray(pageIssues)) break;
+      allIssues.push(...pageIssues);
+      // GitHub returns e.g. `<https://.../issues?page=2>; rel="next", <...>; rel="last"`
+      const linkHeader = res.headers.get("link") || "";
+      const nextMatch = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
+      url = nextMatch ? nextMatch[1] : null;
+    }
+    const issues = allIssues;
     const hackathons = [];
     const lfg = [];
     const seenHackSlugs = new Set();
@@ -627,21 +682,24 @@ async function fetchGitHubIssues() {
         if (date_end && date_end < today) continue;
 
         const tagsRaw = field("Tags");
-        const tags = tagsRaw
-          ? tagsRaw.split(/,\s*/).map((t) => t.trim()).filter(Boolean)
-          : [];
+        const tags = capArray(
+          tagsRaw
+            ? tagsRaw.split(/,\s*/).map((t) => t.trim()).filter(Boolean)
+            : []
+        );
         const descMatch = body.match(/###\s*(?:Description|Descripcion)\s*\n+([\s\S]*?)$/i);
         const description = descMatch ? descMatch[1].trim().slice(0, 300) : "";
 
+        const rawUrl = bilingualField("URL", "URL", "Event URL", "URL del evento");
         hackathons.push({
           slug: `gh-${issue.number}`,
-          name: title.replace(/^\[hackathon\]\s*/i, "").trim(),
+          name: title.replace(/^\[hackathon\]\s*/i, "").trim().slice(0, 200),
           date_start,
           date_end,
-          country: bilingualField("Country", "Pais"),
-          city: bilingualField("City", "Ciudad"),
-          location: bilingualField("Venue", "Lugar"),
-          url: bilingualField("URL", "URL", "Event URL", "URL del evento"),
+          country: (bilingualField("Country", "Pais") || "").slice(0, 100) || null,
+          city: (bilingualField("City", "Ciudad") || "").slice(0, 100) || null,
+          location: (bilingualField("Venue", "Lugar") || "").slice(0, 200) || null,
+          url: isHttpUrl(rawUrl) ? rawUrl : null,
           source: "comunidad",
           type: normalizeType(bilingualField("Type", "Tipo")),
           tags,
@@ -650,21 +708,25 @@ async function fetchGitHubIssues() {
         });
       } else if (lower.startsWith("[lfg]")) {
         seenLfgSourceKeys.add(`gh-${issue.number}`);
-        const handle =
+        const handle = (
           field("Handle", "Your name or handle") ||
           field("Handle", "Tu nombre o alias") ||
-          title.replace(/^\[lfg\]\s*/i, "").trim();
+          title.replace(/^\[lfg\]\s*/i, "").trim()
+        ).slice(0, 100);
         const skillsRaw =
           field("Skills", "Skills (comma-separated)") ||
           field("Skills", "Skills (separados por coma)");
-        const skills = skillsRaw
-          ? skillsRaw.split(/,\s*/).map((s) => s.trim()).filter(Boolean)
-          : [];
+        const skills = capArray(
+          skillsRaw
+            ? skillsRaw.split(/,\s*/).map((s) => s.trim()).filter(Boolean)
+            : []
+        );
         const hackathon = field("Hackathon") || "";
-        const contact =
+        const contact = (
           field("Contact", "Contact (twitter, discord, telegram, email)") ||
           field("Contacto", "Contacto (twitter, discord, telegram, email)") ||
-          "";
+          ""
+        ).slice(0, 200);
         const message = (
           field("Message", "Message (optional)") ||
           field("Mensaje", "Mensaje (opcional)") ||
@@ -675,14 +737,14 @@ async function fetchGitHubIssues() {
           source_key: `gh-${issue.number}`,
           handle,
           skills,
-          hackathon_name: hackathon,
+          hackathon_name: hackathon.slice(0, 200),
           contact,
           message,
           status: issueStatus,
         });
       }
     }
-    return { hackathons, lfg, seenHackSlugs, seenLfgSourceKeys };
+    return { hackathons, lfg, seenHackSlugs, seenLfgSourceKeys, fetchSucceeded: true };
   } catch (e) {
     console.warn("GitHub fetch failed:", e.message);
     return {
@@ -690,6 +752,7 @@ async function fetchGitHubIssues() {
       lfg: [],
       seenHackSlugs: new Set(),
       seenLfgSourceKeys: new Set(),
+      fetchSucceeded: false,
     };
   }
 }
@@ -757,35 +820,42 @@ async function main() {
   // Soft-delete: any comunidad hackathon in DB that we didn't see in the
   // current GitHub fetch (= the issue was closed or deleted). Mark as
   // rejected so it disappears from the home but stays auditable.
-  const { data: existingComunidad, error: hSelectError } = await supabase
-    .from("hackathons")
-    .select("slug")
-    .eq("source", "comunidad");
-  if (hSelectError) {
-    console.warn(
-      "[ingest] could not load existing comunidad slugs:",
-      hSelectError.message
-    );
+  //
+  // Skip when the GitHub fetch failed — otherwise a transient outage would
+  // leave `seenHackSlugs` empty and mass-reject every comunidad hackathon.
+  if (!ghResult.fetchSucceeded) {
+    console.warn("[ingest] skipping comunidad soft-delete because GitHub fetch failed");
   } else {
-    const disappeared = (existingComunidad || [])
-      .map((r) => r.slug)
-      .filter((s) => !ghResult.seenHackSlugs.has(s));
-    if (disappeared.length) {
-      console.log(
-        `[ingest] soft-deleting ${disappeared.length} disappeared comunidad hackathons`
+    const { data: existingComunidad, error: hSelectError } = await supabase
+      .from("hackathons")
+      .select("slug")
+      .eq("source", "comunidad");
+    if (hSelectError) {
+      console.warn(
+        "[ingest] could not load existing comunidad slugs:",
+        hSelectError.message
       );
-      const { error: hSoftError } = await supabase
-        .from("hackathons")
-        .update({
-          status: "rejected",
-          updated_at: new Date().toISOString(),
-        })
-        .in("slug", disappeared);
-      if (hSoftError) {
-        console.warn(
-          "[ingest] comunidad soft-delete failed:",
-          hSoftError.message
+    } else {
+      const disappeared = (existingComunidad || [])
+        .map((r) => r.slug)
+        .filter((s) => !ghResult.seenHackSlugs.has(s));
+      if (disappeared.length) {
+        console.log(
+          `[ingest] soft-deleting ${disappeared.length} disappeared comunidad hackathons`
         );
+        const { error: hSoftError } = await supabase
+          .from("hackathons")
+          .update({
+            status: "rejected",
+            updated_at: new Date().toISOString(),
+          })
+          .in("slug", disappeared);
+        if (hSoftError) {
+          console.warn(
+            "[ingest] comunidad soft-delete failed:",
+            hSoftError.message
+          );
+        }
       }
     }
   }
@@ -811,29 +881,34 @@ async function main() {
   }
 
   // Soft-delete lfg_posts whose source_key disappeared from the open issues.
-  const { data: existingLfg, error: lSelectError } = await supabase
-    .from("lfg_posts")
-    .select("source_key")
-    .not("source_key", "is", null);
-  if (lSelectError) {
-    console.warn(
-      "[ingest] could not load existing lfg source_keys:",
-      lSelectError.message
-    );
+  // Same guard as above — don't mass-reject on a transient GitHub outage.
+  if (!ghResult.fetchSucceeded) {
+    console.warn("[ingest] skipping lfg soft-delete because GitHub fetch failed");
   } else {
-    const disappearedLfg = (existingLfg || [])
-      .map((r) => r.source_key)
-      .filter((s) => s && !ghResult.seenLfgSourceKeys.has(s));
-    if (disappearedLfg.length) {
-      console.log(
-        `[ingest] soft-deleting ${disappearedLfg.length} disappeared lfg posts`
+    const { data: existingLfg, error: lSelectError } = await supabase
+      .from("lfg_posts")
+      .select("source_key")
+      .not("source_key", "is", null);
+    if (lSelectError) {
+      console.warn(
+        "[ingest] could not load existing lfg source_keys:",
+        lSelectError.message
       );
-      const { error: lSoftError } = await supabase
-        .from("lfg_posts")
-        .update({ status: "rejected" })
-        .in("source_key", disappearedLfg);
-      if (lSoftError) {
-        console.warn("[ingest] lfg soft-delete failed:", lSoftError.message);
+    } else {
+      const disappearedLfg = (existingLfg || [])
+        .map((r) => r.source_key)
+        .filter((s) => s && !ghResult.seenLfgSourceKeys.has(s));
+      if (disappearedLfg.length) {
+        console.log(
+          `[ingest] soft-deleting ${disappearedLfg.length} disappeared lfg posts`
+        );
+        const { error: lSoftError } = await supabase
+          .from("lfg_posts")
+          .update({ status: "rejected" })
+          .in("source_key", disappearedLfg);
+        if (lSoftError) {
+          console.warn("[ingest] lfg soft-delete failed:", lSoftError.message);
+        }
       }
     }
   }
