@@ -29,7 +29,7 @@ const LOCALE = locale;
     <div id="input-line">
       <span class="prompt">$&nbsp;</span>
       <div class="input-wrap">
-        <textarea id="cmd" rows="1" autofocus autocomplete="off" spellcheck="false"></textarea>
+        <textarea id="cmd" rows="1" maxlength="2000" autofocus autocomplete="off" spellcheck="false"></textarea>
         <div class="ghost-overlay" id="ghost-overlay" aria-hidden="true">
           <span id="ghost-mirror"></span><span id="autocomplete-ghost" class="autocomplete-ghost"></span>
         </div>
@@ -78,8 +78,13 @@ const LOCALE = locale;
           apikey: SUPABASE_ANON_KEY,
           Authorization: "Bearer " + SUPABASE_ANON_KEY,
         };
-        const hackUrl = SUPABASE_URL + "/rest/v1/hackathons?select=*&status=eq.approved&or=(date_end.is.null,date_end.gte." + TODAY + ")&order=date_start.asc.nullslast";
-        const lfgUrl = SUPABASE_URL + "/rest/v1/lfg_posts?select=*&status=eq.approved&order=created_at.desc";
+        // Explicit column lists (data minimization): request only the fields the
+        // mapper below actually consumes, so any future schema column isn't auto-
+        // exposed to the anon key.
+        const HACK_COLS = "slug,name,date_start,date_end,country,city,location,url,source,type,tags,description";
+        const LFG_COLS = "id,handle,skills,hackathon_name,contact,message,created_at";
+        const hackUrl = SUPABASE_URL + "/rest/v1/hackathons?select=" + HACK_COLS + "&status=eq.approved&or=(date_end.is.null,date_end.gte." + TODAY + ")&order=date_start.asc.nullslast";
+        const lfgUrl = SUPABASE_URL + "/rest/v1/lfg_posts?select=" + LFG_COLS + "&status=eq.approved&order=created_at.desc";
         const [hackRes, lfgRes] = await Promise.all([
           fetch(hackUrl, { headers: commonHeaders }),
           fetch(lfgUrl, { headers: commonHeaders }),
@@ -114,7 +119,7 @@ const LOCALE = locale;
           };
         });
       } catch (e) {
-        console.error("[supabase] fetch failed:", e);
+        console.error("[supabase] fetch failed:", e && e.message ? e.message : e);
       }
     }
 
@@ -200,6 +205,14 @@ const LOCALE = locale;
       return d.innerHTML;
     }
 
+    function safeHref(url) {
+      try {
+        var p = new URL(url, location.href).protocol;
+        if (p === "http:" || p === "https:") return url;
+      } catch (e) {}
+      return "#";
+    }
+
     // Date formatting uses the active locale. The BCP-47 tag we pass to
     // toLocaleDateString is derived from LOCALE: 'en' → 'en-US', 'es' → 'es-AR'
     // (since Argentine Spanish is the copy style we optimize for), 'pt' →
@@ -258,7 +271,7 @@ const LOCALE = locale;
       if (h.description) html += '<div>' + esc(h.description) + '</div>';
 
       let actionsHtml = '';
-      if (h.url) actionsHtml += '<a class="link" href="' + esc(h.url) + '" target="_blank" rel="noopener">' + esc(h.url) + '</a>';
+      if (h.url) actionsHtml += '<a class="link" href="' + esc(safeHref(h.url)) + '" target="_blank" rel="noopener">' + esc(h.url) + '</a>';
       if (h.date_start) {
         if (actionsHtml) actionsHtml += '  ';
         actionsHtml += '<button class="cal-btn" data-ics="' + icsId + '">' + t("event.action.calendar") + '</button>';
